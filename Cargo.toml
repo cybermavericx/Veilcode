@@ -6,7 +6,7 @@ members = ["crates/veilcode-core", "crates/veilcode-cli"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cybermavericx/Veilcode"
-rust-version = "1.85"
+rust-version = "1.88"
 
 # Every crate inherits these with `[lints] workspace = true` (cargo >= 1.74).
 # Kept alongside the in-file #![forbid(unsafe_code)].
@@ -19,5 +19,11 @@ unsafe_code = "forbid"
 [profile.dev.package.argon2]
 opt-level = 3
 
-[profile.dev.package.blake2]
+# D42 / S20: the scanner's regex engine is unusably slow unoptimised on hostile
+# 5 MiB inputs in debug tests. Crate names from Cargo.lock (regex 1.13.1 and
+# its matching engine regex-automata); see docs/VERIFY_LOG.md.
+[profile.dev.package.regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
 opt-level = 3

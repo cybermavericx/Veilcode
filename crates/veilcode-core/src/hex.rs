@@ -18,12 +18,13 @@ pub(crate) fn encode(bytes: &[u8]) -> String {
 /// The buffer is pre-sized (no realloc copies) and wiped if decoding fails.
 pub(crate) fn decode(s: &str) -> Option<Zeroizing<Vec<u8>>> {
     let raw = s.as_bytes();
-    if raw.len() % 2 != 0 {
+    let (pairs, rest) = raw.as_chunks::<2>();
+    if !rest.is_empty() {
         return None;
     }
     let mut out = Zeroizing::new(Vec::with_capacity(raw.len() / 2));
-    for pair in raw.chunks_exact(2) {
-        out.push(nibble(pair[0])? << 4 | nibble(pair[1])?);
+    for [hi, lo] in pairs {
+        out.push(nibble(*hi)? << 4 | nibble(*lo)?);
     }
     Some(out)
 }

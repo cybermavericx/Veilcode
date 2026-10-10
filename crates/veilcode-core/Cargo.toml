@@ -11,11 +11,14 @@ publish = false
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = "0.4.3"
+globset = "0.4.20"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.21"
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+walkdir = "2.5.0"
 zeroize = { version = "1.9.1", features = ["derive"] }
 
 [lints]

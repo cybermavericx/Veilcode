@@ -6,6 +6,7 @@
 mod error;
 mod hex;
 mod rng;
+mod scan;
 mod secret;
 mod token;
 mod vault;
@@ -14,6 +15,7 @@ mod vault;
 mod test_support;
 
 pub use error::{CoreError, Result};
+pub use scan::{Detector, Finding, ScanOptions, ScanReport, ScannedFile, Skipped, scan};
 pub use secret::{SecretBytes, SecretString};
 pub use token::{TOKEN_PATTERN, Token};
 pub use vault::{Session, SessionId, Vault};
