@@ -337,7 +337,7 @@ Type: auto
 Delete one token from the masked tree, then restore. Pass when `session_forgotten == false`, `kept_reason` reports `missing = 1`, and the session and all its entries are still in the reopened vault. Repeat once with an unknown token and once with an added secret; each must keep the session.
 ### LF2b — not clean when files were not copied or tokens remain in unscanned files (D71)
 Type: auto
-Run two restores. In the first, a vault token is in a copied binary file and also in a text file. In the second, a text file is `changed_during_scan` or has a non-UTF-8 name (Unix). Pass when both keep the session, with `kept_reason` naming `tokens_in_unscanned` and `not_copied` respectively. A token from another session gives `foreign_session_tokens == 1` and does not by itself block forgetting.
+Run two restores. In the first, a vault token is in a copied binary file and also in a text file. In the second, a text file is `changed_during_scan` or has a non-UTF-8 name (Unix except macOS, whose APFS rejects such names). Pass when both keep the session, with `kept_reason` naming `tokens_in_unscanned` and `not_copied` respectively. A token from another session gives `foreign_session_tokens == 1` and does not by itself block forgetting.
 ### LF3 — keep retains the session (D60)
 Type: auto
 A clean restore with `keep = true` gives `session_forgotten == false`, `kept_reason == KeepRequested`, and the session and entries unchanged.

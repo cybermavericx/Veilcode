@@ -462,7 +462,8 @@ fn lf2b_not_clean_when_not_copied_or_tokens_in_unscanned() {
         (1, not_clean(0, 1))
     );
     assert!(!rep.session_forgotten && session(&vault, &a.session_id).is_some());
-    #[cfg(unix)]
+    // macOS (APFS) refuses non-UTF-8 file names, as in S23.
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         use std::os::unix::ffi::OsStrExt;
         std::fs::remove_file(masked_a.join("blob.bin")).expect("rm");
