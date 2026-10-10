@@ -20,9 +20,13 @@ unmaintained = "all"
 
 [licenses]
 # Built from `cargo deny check licenses` output. Our own crates are
-# "MIT OR Apache-2.0". When regex arrives (P2), Unicode-3.0 will likely be
-# needed for regex-syntax/unicode-ident; add it only once the check asks.
-allow = ["MIT", "Apache-2.0"]
+# "MIT OR Apache-2.0".
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # unicode-ident, via proc-macro2 <- serde_derive/thiserror-impl/zeroize_derive
+    "Unicode-3.0",
+]
 confidence-threshold = 0.8
 
 [bans]

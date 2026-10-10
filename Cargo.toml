@@ -14,8 +14,10 @@ rust-version = "1.85"
 unsafe_code = "forbid"
 
 # SPEC §8 / D18: build the argon2 crates with opt-level = 3 in the dev profile
-# so tests using production KDF params stay fast. Crate names are taken from
-# Cargo.lock once P1 adds argon2. Placeholder only:
-#
-# [profile.dev.package.<argon2-crate>]
-# opt-level = 3
+# so tests using production KDF params stay fast. Crate names come from
+# Cargo.lock (argon2 and its hash, blake2); see docs/VERIFY_LOG.md.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
