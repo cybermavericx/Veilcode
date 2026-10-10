@@ -1,6 +1,6 @@
 # Veilcode — Execution Plan (for SPEC v1.1)
 
-**Current phase: P2** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
+**Current phase: P3** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
 
 Rules:
 - One phase per branch and PR.
