@@ -1,0 +1,6 @@
+# Pinned stable toolchain (SPEC §9; must be >= 1.85 and >= the locked eframe MSRV).
+# Keys verified against https://rust-lang.github.io/rustup/overrides.html (VERIFY_LOG 2026-10-10).
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -1,0 +1,84 @@
+# CI for Veilcode (PLAN P0). Every action is pinned by full commit SHA; the
+# tag beside it and the lookup URL are recorded in docs/VERIFY_LOG.md.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # toolchain left empty: the action reads rust-toolchain.toml.
+      # build-warnings keeps its default (deny), matching our zero-warnings rule.
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+      # cargo fmt has no --locked flag (it does not resolve dependencies).
+      - name: fmt
+        shell: bash
+        run: cargo fmt --all -- --check
+      - name: clippy
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: test
+        shell: bash
+        run: cargo test --locked --workspace
+      - name: check-offline
+        shell: bash
+        run: bash scripts/check-offline.sh
+      - name: check-test-ids
+        shell: bash
+        run: bash scripts/check-test-ids.sh
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+      # Built from crates.io source (crate checksums verified via its own lockfile)
+      # instead of cargo-deny-action, which downloads an unverified binary (VERIFY_LOG 2026-10-10).
+      - name: install cargo-deny
+        shell: bash
+        run: cargo install --locked cargo-deny@0.20.2
+      - name: cargo deny
+        shell: bash
+        run: cargo deny --all-features --locked check
+
+  net-audit:
+    name: net-audit (strace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+      - name: install strace
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y strace util-linux
+      - name: net-audit
+        shell: bash
+        run: bash scripts/net-audit.sh

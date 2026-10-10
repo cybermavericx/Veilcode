@@ -6,7 +6,7 @@ New gaps found during implementation go at the bottom as `PROPOSED`. Claude Code
 | ID | Decision | Where in SPEC | Status |
 |---|---|---|---|
 | D0 | Commits use `Muhammed Noufal <muhammednoufal7@gmail.com>` as a repo-local identity. No AI trailers or footers anywhere. | CLAUDE.md rule 9 | ACCEPTED |
-| D1 | Develop natively on Windows 11 (MSVC). Use WSL Ubuntu for Linux checks (strace audit, `.deb`). CI covers Linux, Windows and macOS. | ACTION_PLAN | ACCEPTED |
+| D1 | **Revised 2026-10-10:** develop in WSL Kali, because Windows Smart App Control blocks unsigned compiled binaries and this account is not an admin, so it cannot install the MSVC Build Tools. git runs from Windows. CI builds and tests natively on Linux, Windows and macOS. | CLAUDE.md "Dev environment" | ACCEPTED |
 | D2 | Offline claim limited to the exact §2.1 wording, which is provable. | §2.1 | ACCEPTED |
 | D3 | Test-ID renames: `SS1`→`SE1`, proptest `P1`→`PROP1`, enforced by `check-test-ids.sh`. | §8 | ACCEPTED |
 | D4 | Token regex without `\b`; HEX8 must contain an a–f letter. | §4 | ACCEPTED |

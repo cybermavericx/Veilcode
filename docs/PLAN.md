@@ -14,19 +14,19 @@ All decisions D0–D23 are ACCEPTED and folded into SPEC. Phase-time choices are
 
 ## P0 — Bootstrap
 Tasks:
-- [ ] Cargo workspace with `crates/veilcode-core` (lib) and `crates/veilcode-cli` (bin `veilcode`); `crates/veilcode-gui` is added in P6. Each crate has `#![forbid(unsafe_code)]`. `edition = "2024"` goes in `[workspace.package]`.
-- [ ] `rust-toolchain.toml` pinned to the current stable version (check with `rustup check`; must be ≥ 1.85; log it in VERIFY_LOG).
-- [ ] Dev-profile override `opt-level = 3` for the argon2 crates (SPEC §8). Take the crate names from Cargo.lock once P1 adds argon2. In P0, add only a commented placeholder.
-- [ ] `LICENSE-MIT`, `LICENSE-APACHE`, `README.md` (problem, status "pre-alpha", the offline claim worded exactly as SPEC §2.1, prior-art credits only after verification per D21), `SECURITY.md` (private reporting via GitHub Security Advisories).
-- [ ] `deny.toml` with the bans from SPEC §10.1, plus a license allow-list (built from `cargo deny check licenses` output, not memory) and advisories checks.
-- [ ] `scripts/check-offline.sh` (SPEC §10.2).
-- [ ] `scripts/net-audit.sh` (SPEC §10.3). In P0 it covers the CLI only, running `veilcode --help` under strace. P4 extends it to the full end-to-end run, and P6 adds the GUI.
-- [ ] `.github/workflows/ci.yml`:
+- [x] Cargo workspace with `crates/veilcode-core` (lib) and `crates/veilcode-cli` (bin `veilcode`); `crates/veilcode-gui` is added in P6. Each crate has `#![forbid(unsafe_code)]`. `edition = "2024"` goes in `[workspace.package]`.
+- [x] `rust-toolchain.toml` pinned to the current stable version (check with `rustup check`; must be ≥ 1.85; log it in VERIFY_LOG).
+- [x] Dev-profile override `opt-level = 3` for the argon2 crates (SPEC §8). Take the crate names from Cargo.lock once P1 adds argon2. In P0, add only a commented placeholder.
+- [x] `LICENSE-MIT`, `LICENSE-APACHE`, `README.md` (problem, status "pre-alpha", the offline claim worded exactly as SPEC §2.1, prior-art credits only after verification per D21), `SECURITY.md` (private reporting via GitHub Security Advisories).
+- [x] `deny.toml` with the bans from SPEC §10.1, plus a license allow-list (built from `cargo deny check licenses` output, not memory) and advisories checks.
+- [x] `scripts/check-offline.sh` (SPEC §10.2).
+- [x] `scripts/net-audit.sh` (SPEC §10.3). In P0 it covers the CLI only, running `veilcode --help` under strace. P4 extends it to the full end-to-end run, and P6 adds the GUI.
+- [x] `.github/workflows/ci.yml`:
   - Runs the standard checks on ubuntu, windows and macos, with `shell: bash` for `.sh` steps.
   - A Linux-only job runs `net-audit.sh`.
   - Actions are pinned by commit SHA, looked up on each action's releases page and logged in VERIFY_LOG.
-- [ ] `.gitignore`: `target/`, `*.vc`, `*.vc.tmp`, `proptest-regressions/`.
-- [ ] Run tests O1–O4 (TEST_CASES.md) and paste their output in the PR.
+- [x] `.gitignore`: `target/`, `*.vc`, `*.vc.tmp`, `proptest-regressions/`.
+- [x] Run tests O1–O4 (TEST_CASES.md) and paste their output in the PR.
 
 Acceptance: `cargo build --workspace` ✔ · standard checks ✔ · CI green on all 3 OS.
 
