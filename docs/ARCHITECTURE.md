@@ -77,11 +77,12 @@ crates/veilcode-core/src/
 │   │                 #   create(path, &SecretString) / open(path, &SecretString) / save()
 │   │                 #   get_or_create_token(&SecretBytes, name, rule_id) → Token
 │   │                 #   pub(crate) fn value(&Token) → Option<&SecretBytes>   (restore/text only)
-│   │                 #   sessions(): list / add / delete (SPEC §6.4)
+│   │                 #   sessions(): list / add / delete (SPEC §6.4); open() purges expired sessions (D61)
 │   ├── format.rs     # Header parse/serialise (magic, format, params, salt, nonce); bounds check
 │   ├── crypto.rs     # derive_key(params, pass, salt) → Key (Zeroize); seal / open (AAD = header)
 │   │                 #   #[cfg(test)] KDF call counter (V9), zeroize counter hook (G3)
 │   └── model.rs      # VaultData { version, sessions, entries: BTreeMap<Token, Entry{value_hex,name,rule_id}> }
+│                     #   Session { id, created, expires_at (validated, D61), source_label, scan_options (D57r), tokens }
 ├── scan/
 │   ├── mod.rs        # pub fn scan(input, &ScanOptions) → Result<ScanReport>
 │   ├── walk.rs       # walkdir (no follow), .git hard-exclude, default excludes, .veilcodeignore (globset),
@@ -96,7 +97,9 @@ crates/veilcode-core/src/
 │       ├── php.rs    # D3
 │       └── url.rs    # D4
 ├── mask.rs           # pub fn mask(&ScanReport, selection, input, out, &mut Vault, opts) → MaskReport
-├── restore.rs        # pub fn restore(input, out, &mut Vault, session) → RestoreReport
+├── restore.rs        # pub fn restore(input, out, &mut Vault, session, keep) → RestoreReport; forget step last (D60)
+├── vault/session.rs  # retention (child of vault, so it can reach private fields): forget(session), purge_expired(now), delete, status, purge; empty vault → file removed (D60–D63)
+├── clock.rs          # trait Clock { now_unix() }; SystemClock; ManualClock is #[cfg(test)] and open_with_clock is pub(crate) (D70). Used by expiry (D61) and GUI auto-lock
 ├── text.rs           # mask_text / restore_text (GUI Text Mode)
 ├── report.rs         # MaskReport, RestoreReport (Serialize; previews/ids/counts only)
 └── test_support.rs   # #[cfg(test)] helpers from TEST_CASES.md (random_alnum, fake_github_pat, assert_no_secret…)
@@ -107,7 +110,7 @@ crates/veilcode-core/src/
 2. **Writes are contained.** Every file write goes through `safe_join(&OutputDir, &RelPath)`, and there is no other constructor of output paths. `RelPath` can only be built through validation.
 3. **The input is read-only.** Core opens input files with `File::open` (read) only; write APIs appear only behind `safe_join` paths. The security reviewer checks this on every PR, and M1 proves it with before/after hashes.
 4. **Vault values are read only by restore.** `Vault::value` is `pub(crate)` and used only by `restore.rs` and `text.rs`.
-5. **Randomness and time are injected.** `RandomSource` (tokens, nonces, salts) and `Clock` (GUI auto-lock) make tests deterministic without test backdoors in release builds.
+5. **Randomness and time are injected.** `RandomSource` (tokens, nonces, salts) and `Clock` (session expiry in core, GUI auto-lock) make tests deterministic without test backdoors in release builds.
 
 ## 5. Data flows
 **Scan:** `walk` → for each Text file: read bytes → sha256 → `detect::run(D1..D4)` → candidates → `resolve` → `Finding`s (preview computed, value dropped immediately) → `ScanReport`.
@@ -128,6 +131,7 @@ crates/veilcode-core/src/
 3. Scan → `new_secrets` (previews)
 4. For each text file: `TOKEN_REGEX` matches → vault lookup → replace or record as unknown
 5. Compute missing (session tokens never seen)
+6. Fsync the outputs; if clean and not keep, forget the session (D60), or remove the vault file if it was the last session (D62)
 6. Copy the other non-symlink files
 7. Return `RestoreReport`
 
@@ -136,11 +140,11 @@ crates/veilcode-core/src/
 pub fn scan(input: &Path, opts: &ScanOptions) -> Result<ScanReport, CoreError>;
 pub fn mask(report: &ScanReport, selection: &Selection, input: &Path, out: &Path,
             vault: &mut Vault, opts: &MaskOptions) -> Result<MaskReport, CoreError>;
-pub fn restore(input: &Path, out: &Path, vault: &mut Vault, session: Option<&SessionId>)
+pub fn restore(input: &Path, out: &Path, vault: &mut Vault, session: Option<&SessionId>, keep: bool)
             -> Result<RestoreReport, CoreError>;
 pub fn mask_text(text: &str, vault: &mut Vault) -> Result<(String, SessionId), CoreError>;
-pub fn restore_text(text: &str, vault: &Vault) -> Result<(String, RestoreReport), CoreError>;
-pub struct Vault; // create / open / save / sessions / delete_session
+pub fn restore_text(text: &str, vault: &mut Vault, session: Option<&SessionId>, keep: bool) -> Result<(String, RestoreReport), CoreError>;
+pub struct Vault; // create / open (→ expired_removed) / save / sessions / delete_session / status / purge
 pub fn default_vault_path() -> Option<PathBuf>; // directories::ProjectDirs
 ```
 The exact signatures are settled in P1–P3 tests. Changing this surface after P3 needs a DECISIONS entry.
@@ -149,7 +153,7 @@ The exact signatures are settled in P1–P3 tests. Changing this surface after P
 ```
 crates/veilcode-cli/
 ├── src/main.rs        # parse → dispatch → map CoreError to exit 2 + message (anyhow context, no values)
-├── src/args.rs        # clap derive: scan | mask | restore | session {list,delete}; global flags
+├── src/args.rs        # clap derive: scan | mask (--ttl-days) | restore (--keep) | session {list,delete} | vault {status,purge [--yes]}; global flags
 ├── src/passphrase.rs  # rpassword prompt (twice on create) or one stdin line
 ├── src/output.rs      # human summary to stderr, JSON report to --report/--json files
 └── tests/
@@ -163,7 +167,7 @@ crates/veilcode-gui/src/
 ├── main.rs        # eframe::run_native; NativeOptions; no persistence
 ├── state.rs       # AppState { Locked | Unlocked{vault} }, Screen, actions → Result; NO egui types here (testable: G1–G3)
 ├── viewmodel.rs   # FindingRow{preview, path, line, rule, selected}, ReportView… (previews only: G2)
-├── clock.rs       # trait Clock; SystemClock; test ManualClock; idle timer (10 min) → lock()
+├── idle.rs        # idle timer (10 min) → lock(), driven by veilcode_core::Clock (the trait moved to core)
 ├── worker.rs      # one background thread + std::sync::mpsc: Argon2 and file I/O never block the UI
 ├── app.rs         # impl eframe::App: route to views, feed input events to idle timer, poll worker
 └── views/         # unlock.rs, scan.rs, mask.rs, restore.rs, sessions.rs, text_mode.rs

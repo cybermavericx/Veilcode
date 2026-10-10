@@ -1,7 +1,7 @@
-# Veilcode — Specification (v1.1, frozen 2026-10-09)
+# Veilcode — Specification (v1.2, frozen 2026-10-10)
 
 Repo: https://github.com/cybermavericx/Veilcode · License: MIT OR Apache-2.0
-Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI.
+Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md.
 
 ## 1. Problem & positioning
 Developers paste server code into AI assistants, including `.env` files and config secrets. Veilcode masks those secrets with unique placeholders, stores the real values in a local encrypted vault, and restores them after the AI work is done, even if the AI moved, renamed, or edited the code.
@@ -96,7 +96,7 @@ preview ("abcd…(40)"), file_sha256
 ## 6. Operations
 ### 6.1 Mask (`folder → new folder`)
 Inputs: input dir, output dir, ScanReport plus a selection of finding ids (default: all), vault (unlocked).
-1. Refuse if the output dir exists and is non-empty, or if it is inside the input dir. Compare canonicalised paths; for a not-yet-existing output dir, canonicalise its nearest existing ancestor.
+1. Refuse if the output dir already exists or is inside the input dir; Veilcode creates it itself, 0700 on Unix (D68). Compare canonicalised paths, and refuse an unsafe group/other-writable non-sticky parent on Unix. Compare canonicalised paths; for a not-yet-existing output dir, canonicalise its nearest existing ancestor.
 2. **Validate every `rel_path`** that comes from the ScanReport or findings file. It must be relative and `/`-separated, with no `..`, `.` or empty components, and no root, drive or UNC prefix. Reject before any I/O.
 3. Verify that **every** text file to be written matches `scanned_files` (sha256), and that no text file exists that is absent from `scanned_files`. On mismatch, fail with "file changed since scan — rescan".
 4. Get or create a token for each selected secret. Store `token → {value_hex, name, rule_id}` in the vault and record a session.
@@ -108,21 +108,32 @@ Inputs: input dir, output dir, ScanReport plus a selection of finding ids (defau
 6. Save the vault, then return a MaskReport: session id, counts, files not copied. The report contains no secret values.
 
 ### 6.2 Restore (`AI-modified masked folder → new folder`)
-Inputs: input dir, output dir, vault, optional session id (default: newest session).
-1. Same output-dir rules and walk rules as mask. `.git` is excluded and symlinks are not copied.
+Inputs: input dir, output dir, vault, optional session id (default: newest session), `keep` (default false).
+1. Same output-dir rules as mask. The walk uses the chosen session's recorded `scan_options` (D57r). `.git` is excluded and symlinks are not copied.
 2. Scan the input with detectors D1–D4. Any finding is a **new secret introduced by the AI**; report it.
-3. In text files, replace every token match found **anywhere in the vault** with its value. Token-shaped strings not in the vault are left untouched and reported as **unknown**.
+3. In text files, replace every token match found **anywhere in the vault** with its value. A match is tried at every `VEILCODE_` offset (D29). Token-shaped strings not in the vault are left untouched and reported as **unknown**.
 4. Tokens of the chosen session that never appear in the input are reported as **missing** (the AI may have deleted them).
-5. Copy every other non-symlink file as-is, then return a RestoreReport. The report contains no secret values.
+5. Copy every other non-symlink file as-is. Fsync every written file, the created directories and the output root (on Unix).
+6. **Forget by default (D60).** If the restore is clean (0 missing, 0 unknown, 0 new secrets) and `keep` is false, delete the chosen session and every entry no other session uses, then save under the D28 lock (or remove the vault file, §7 D62). This step runs only after step 5 has succeeded; any earlier error leaves the vault untouched.
+7. Return a RestoreReport with `session_forgotten`, or `kept_reason` when the session is kept. The report contains no secret values.
 
 Every write path must be checked: the joined output path must stay under the output dir.
 
 ### 6.3 Text Mode (GUI only)
-`mask_text(text) -> (masked_text, session)` and `restore_text(text) -> (restored, report)` use the same detectors, tokens and vault.
+`mask_text(text) -> (masked_text, session)` and `restore_text(text, session?, keep) -> (restored, report)` use the same detectors, tokens and vault.
+- D2 and D3 always apply to pasted text (D58).
+- `restore_text` defaults to the newest session labelled `"text"`, computes `missing` against it, and follows the same forget-by-default rule (D60).
 - The restored-text panel shows the warning "contains real secrets — clipboard managers may keep history".
 
-### 6.4 Sessions
-`list` shows id, created (unix seconds), source label, token count. `delete <id>` removes the session and any vault entries no other session uses. Deleting an unknown id is an error.
+### 6.4 Sessions and retention
+- **Session fields:** id, `created` (unix seconds), `expires_at` (D61), source label, `scan_options`, tokens.
+- **Expiry (D61):** `expires_at = created + ttl_days × 86400`. `ttl_days` defaults to 30, range 1–365 (mask option; CLI `--ttl-days N`). Expired sessions are purged on every successful vault open (§7).
+- **`list`** shows id, created, expires_at, source label and token count.
+- **`delete <id>`** removes the session and any vault entries no other session uses. Deleting an unknown id is an error.
+- **`status`** (D63) shows session count, oldest session age and next expiry. It shows no values.
+- **`purge`** (D63) removes all sessions and entries, then the vault file. The CLI asks for confirmation unless `--yes` is given.
+- **Empty vault removal (D62):** any operation that leaves zero sessions (forget, expiry, delete, purge) deletes `vault.vc` instead of saving an empty file.
+- **Per-project vaults (D64):** `--vault <project>.vc` is the recommended pattern. The GUI offers "separate vault for this project".
 
 ## 7. Vault
 - Location: `directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")` data dir, file `vault.vc`. Overridable via `--vault` / config (used by tests).
@@ -136,7 +147,10 @@ Every write path must be checked: the joined output path must stay under the out
   - The salt is kept for the vault's lifetime.
 - **AEAD:** XChaCha20-Poly1305, with a fresh random nonce on every save. AAD = all header bytes before the ciphertext.
 - **Plaintext:** JSON `{ "version":1, "sessions":[...], "entries":{ token: {value_hex,name,rule_id} } }`. `value_hex` is the lowercase hex of the raw secret bytes.
-- **Save:** write `vault.vc.tmp`, fsync, rename over `vault.vc`.
+- **Session record** in the plaintext: `{ id, created, expires_at, source_label, scan_options, tokens }`. `expires_at` is validated on deserialize (`created < expires_at <= created + 365 days`), otherwise the generic error.
+- **Open (D61):** after a successful decrypt, sessions with `expires_at <= now` (from the core `Clock`) are purged, along with entries no remaining session uses. If any were purged, the vault is saved immediately, or removed (D62). The open result exposes `expired_removed` (a count only).
+- **Save:** write `vault.vc.tmp`, fsync, rename over `vault.vc` (D28 lock, `0600` on Unix).
+- **Removal (D62):** when zero sessions remain after a removal, `vault.vc` is deleted under the D28 lock: D7 hash check, remove, fsync the parent directory on Unix. It is never saved as an empty encrypted file.
 - **Concurrent writers:** on open, remember the sha256 of the file bytes. Before saving, re-hash the file on disk; if it differs, refuse with "vault changed by another Veilcode process — reopen".
 - **Passphrase:** minimum 12 Unicode scalar values (`chars().count()`) when creating a vault.
   - A wrong passphrase, a corrupted file, a bad magic value, an unknown format or out-of-range params all produce the same error: "wrong passphrase or corrupted vault".
@@ -189,6 +203,14 @@ Every write path must be checked: the joined output path must stay under the out
   - secrets that no detector recognises (mitigation: user review and `.veilcodeignore`; the README must say detection is best-effort)
   - OS components outside the app: graphics drivers, the accessibility bus, clipboard managers keeping history of copied restored text, and backup or sync tools copying the restore output folder (which holds real secrets)
   - memory forensics on a running process (zeroization is best-effort)
+- **Retention (D60–D65).** The vault concentrates secrets from every project that has not finished its round trip. To limit this:
+  - Sessions are forgotten after a clean restore, expire after 30 days by default, and the file is deleted when empty.
+  - Per-project vaults are recommended.
+
+  Honest limits, which README and THREAT_MODEL.md must state:
+  - Deleting rewrites or removes the encrypted file, but SSD wear-levelling, backups and cloud sync of the data dir may keep old encrypted copies. Exclude the Veilcode data dir from sync and backup.
+  - Passphrase strength is the last line of defence for any copy that survives.
+  - Malware active while the vault is unlocked defeats all of this.
 
 ## 12. Verified facts
 | Date | Fact | Source |

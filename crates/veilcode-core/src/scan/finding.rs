@@ -2,6 +2,7 @@
 //! secret value: only offsets, ids, names, hashes and D25 previews.
 
 use crate::hex;
+use crate::scan::ScanOptions;
 use crate::scan::detect::Candidate;
 use crate::secret::SecretBytes;
 use serde::Serialize;
@@ -84,6 +85,8 @@ pub struct ScanReport {
     pub skipped: Skipped,
     /// Rule-load and ignore-file warnings (never contain values).
     pub warnings: Vec<String>,
+    /// The options the scan ran with; mask re-walks with these (D51).
+    pub options: ScanOptions,
 }
 
 /// SPEC §5 finding id.

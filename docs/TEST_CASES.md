@@ -262,6 +262,9 @@ A `.env` file whose `DB_PASSWORD` value contains the bytes `0xff 0xfe` is masked
 ### M10 — malicious findings-file paths
 Type: auto
 Each `rel_path` in `../x`, `a/../../x`, `/etc/x`, `C:\x`, `\\srv\x` and `a//b` is rejected before any write, and the output dir stays empty.
+### M11 — output dir must be new and private (D68)
+Type: auto
+An existing empty output dir is refused for both mask and restore, and nothing is written. A non-existent output dir with missing parents is created. On Unix: the created output root has mode `0700`, and a parent with mode `0777` without the sticky bit is refused, while `/tmp`-style `1777` is accepted.
 ### R1 — round trip
 Type: auto
 Mask, then restore. The restored tree equals the input tree, excluding `.git` and not-copied files.
@@ -295,6 +298,18 @@ When restoring a masked `.env` file or URL (`postgres://u:VEILCODE_…@h`), `rep
 ### R9 — token after a `VEILCODE_` prefix (D29)
 Type: auto
 The text `VEILCODE_` + token (and `VEILCODE_X_` + token) restores the token to its secret, leaving the prefix bytes untouched.
+### R10 — permissions kept, restored secrets owner-only (D55, Unix)
+Type: auto
+An executable script (`0o755`) holding a secret is masked to `0o755`. After restore, a file with a replaced token is `0o700`; an untouched file keeps its mode.
+### R11 — output never overwrites (D54)
+Type: auto
+The write helper refuses an existing path, including a pre-planted symlink inside the output dir (Unix), and never follows it.
+### R12 — restore needs a session (D73)
+Type: auto
+On a vault with no sessions, `restore(…, None, …)` and `restore_text(…, None, …)` both return the D73 error, and the output dir is not created.
+### R13 — failed run removes its partial output (D69)
+Type: auto
+Use the paths.rs write-failure hook to fail after 2 files, once in mask and once in restore. Pass when each returns `PartialOutput { cleaned: true, .. }`, the output dir no longer exists, and the vault is unchanged (file sha256 equal).
 ### X1 — text mode round trip
 Type: auto
 `restore_text(mask_text(s).0) == s` for a string holding a PAT, a URL password and an env line.
@@ -304,8 +319,59 @@ Two sessions share one secret. Deleting session 1 keeps the shared entry and dro
 ### PROP1 — property round trip
 Type: auto
 proptest generates trees of 1–5 files with random bytes (including CRLF, NUL-free text and adjacent word characters), with planted D2, D4 and PAT secrets. Then `restore(mask(x)) == x` holds. Use `failure_persistence: None` and low vault params.
+### SE2 — session records scan options; restore uses them (D57r)
+Type: auto
+Mask with `no_default_excludes = true` on a tree that has `node_modules/x.js`. Restore round-trips that file. The session JSON holds `scan_options`.
+### LF1 — clean restore forgets the session (D60)
+Type: auto
+Sessions A and B share a secret, and A also has a secret of its own.
+
+Pass when, after a clean restore of A (keep = false):
+- the report has `session_forgotten == true`;
+- session A is gone;
+- the entry unique to A is gone;
+- the shared entry still exists and B still lists it;
+- the vault reopens with the same passphrase.
+### LF2 — non-clean restore keeps the session (D60)
+Type: auto
+Delete one token from the masked tree, then restore. Pass when `session_forgotten == false`, `kept_reason` reports `missing = 1`, and the session and all its entries are still in the reopened vault. Repeat once with an unknown token and once with an added secret; each must keep the session.
+### LF2b — not clean when files were not copied or tokens remain in unscanned files (D71)
+Type: auto
+Run two restores. In the first, a vault token is in a copied binary file and also in a text file. In the second, a text file is `changed_during_scan` or has a non-UTF-8 name (Unix except macOS, whose APFS rejects such names). Pass when both keep the session, with `kept_reason` naming `tokens_in_unscanned` and `not_copied` respectively. A token from another session gives `foreign_session_tokens == 1` and does not by itself block forgetting.
+### LF3 — keep retains the session (D60)
+Type: auto
+A clean restore with `keep = true` gives `session_forgotten == false`, `kept_reason == KeepRequested`, and the session and entries unchanged.
+### LF4 — expiry on open (D61)
+Type: auto
+Use a manual clock. Mask session X with `ttl_days = 1` and session Y with `ttl_days = 30` at time T. Open at T + 86400 + 1.
+
+Pass when:
+- `expired_removed == 1`;
+- X and its unique entries are gone, and Y is kept;
+- the file on disk was rewritten: the file sha256 changed, and a fresh open sees X absent;
+- opening at T + 10 s removes nothing.
+
+Also check that `ttl_days` values 0 and 366 are rejected, and that a tampered `expires_at` beyond `created + 365 days` gives the generic error (build it with the test-only constructor + re-seal).
+### LF5 — last session removal deletes the file (D62)
+Type: auto
+Run each of the four paths: forget via a clean restore, expiry on open, `delete_session`, and `purge`. Each leaves zero sessions.
+
+Pass when, for each path:
+- `vault.vc` no longer exists;
+- `vault.vc.tmp` does not exist either;
+- a new mask afterwards creates a new file that opens normally.
+### LF6 — purge and status hold no secrets (D63)
+Type: auto
+With 3 sessions, `status()` reports `sessions == 3`, the correct `oldest_created` and the correct `next_expiry`. `purge()` removes everything and deletes the file. `assert_no_secret` passes on the JSON and Debug of `VaultStatus`, the purge result, the open result (`expired_removed`) and every report.
+### LF7 — forget only after output is written (D60)
+Type: auto
+Inject an output write failure, either with a test-only write-failure hook in the `paths.rs` write helpers or by making the output dir read-only (Unix). Pass when restore returns an error, the session and all entries are still in the reopened vault, and nothing was forgotten.
 
 ---
+
+### LF9 — failed persist leaves memory equal to disk (D72)
+Type: auto
+Make persist fail: modify `vault.vc` from a second handle, or hold the D28 tmp lock, after the outputs are written. Then run each of forget (clean restore), delete_session and purge. Pass when, after each, the in-memory vault lists exactly the sessions a fresh open of the file lists, and the error is returned.
 
 ## P4 — CLI (runs the real binary, `env!("CARGO_BIN_EXE_veilcode")`)
 ### C1 — end-to-end
@@ -335,6 +401,16 @@ Documented in the PR: the folder layout, the commands and the report excerpts (p
 ### C9 — CLI network audit
 Type: command
 `bash scripts/net-audit.sh` runs scan → mask → restore under strace with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. It runs in Linux CI, and locally in WSL. Paste the output in the PR.
+### LF8 — CLI lifecycle end-to-end (D60–D63)
+Type: auto
+Run through the binary with `--passphrase-stdin --vault <tmp>`:
+1. `mask --ttl-days 7`, then `vault status`, which shows 1 session and an expiry about 7 days ahead.
+2. `restore --keep`, after which the session is kept.
+3. `restore` again, which prints "session forgotten". After it, `vault.vc` is gone because it was the last session.
+4. A new `mask`, then `vault purge --yes`, after which the file is gone.
+5. `vault purge` without `--yes` and with stdin not confirming, which aborts with exit 2 and changes nothing.
+
+Every command exits 0 except step 5. stdout and stderr of every invocation pass `assert_no_secret`.
 
 ---
 
@@ -367,7 +443,7 @@ Type: auto
 A test parses `cargo metadata --format-version 1` (via `std::process::Command` in `crates/veilcode-gui/tests/`) and asserts that the enabled features of `eframe` and `egui-winit` include neither `links` nor `persistence`, and that no package named `webbrowser`, `open` or `opener` is in the resolved graph.
 ### G5 — manual QA
 Type: manual
-Checklist in the PR: each screen, light and dark, on Windows 11 (local and over RDP) and on Ubuntu (X11 and Wayland). Keyboard-only navigation works.
+Checklist in the PR: each screen, light and dark, on Windows 11 (local and over RDP) and on Ubuntu (X11 and Wayland). Keyboard-only navigation works. **Sessions screen (D63):** age and expiry columns are shown; "Purge all" asks for confirmation, and cancelling changes nothing. The restore screen has a "keep session" checkbox (default off) and shows "session forgotten" or the kept reason. The mask screen has "separate vault for this project" (D64) and a TTL selector (1–365, default 30).
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

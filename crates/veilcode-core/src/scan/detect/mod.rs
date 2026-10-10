@@ -64,3 +64,13 @@ pub(crate) fn detect_file(
     url::detect(content, &mut out);
     out
 }
+
+/// Runs D1 → D4 on pasted text: D2 and D3 apply regardless of file name.
+pub(crate) fn detect_all(rules: &gitleaks::RuleSet, content: &[u8]) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    rules.detect("", content, &mut out);
+    env::detect(content, &mut out);
+    php::detect(content, &mut out);
+    url::detect(content, &mut out);
+    out
+}

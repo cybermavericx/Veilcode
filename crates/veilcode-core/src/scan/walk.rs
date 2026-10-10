@@ -35,6 +35,15 @@ pub(crate) struct FileEntry {
     pub(crate) path: PathBuf,
     /// (dev, ino) seen by the walk (D45).
     pub(crate) ident: Option<(u64, u64)>,
+    /// Permission bits `mode & 0o777` on Unix; 0 elsewhere (D55).
+    pub(crate) mode: u32,
+}
+
+/// What a walk found: regular files and non-excluded directories, in
+/// walk order (a directory comes before its contents).
+pub(crate) struct Walked {
+    pub(crate) files: Vec<FileEntry>,
+    pub(crate) dirs: Vec<String>,
 }
 
 /// A file's class; only text is scanned.
@@ -57,6 +66,19 @@ pub(crate) fn identity(meta: &Metadata) -> Option<(u64, u64)> {
 #[cfg(not(unix))]
 pub(crate) fn identity(_meta: &Metadata) -> Option<(u64, u64)> {
     None
+}
+
+/// Permission bits `mode & 0o777` (D55).
+#[cfg(unix)]
+pub(crate) fn mode_bits(meta: &Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o777
+}
+
+/// No permission handling off Unix (D55).
+#[cfg(not(unix))]
+pub(crate) fn mode_bits(_meta: &Metadata) -> u32 {
+    0
 }
 
 /// A name for listing: the name itself, or (D46) an escaped form if it is not UTF-8.
@@ -92,12 +114,8 @@ fn is_git_name(name: &str) -> bool {
 }
 
 /// Walks `input` without following links. Symlinks and excluded entries go
-/// into `report.skipped`; regular files are returned sorted by path.
-pub(crate) fn walk(
-    input: &Path,
-    opts: &ScanOptions,
-    report: &mut ScanReport,
-) -> Result<Vec<FileEntry>> {
+/// into `report.skipped`; regular files and directories are returned sorted.
+pub(crate) fn walk(input: &Path, opts: &ScanOptions, report: &mut ScanReport) -> Result<Walked> {
     if !input.is_dir() {
         return Err(CoreError::Io {
             path: input.to_path_buf(),
@@ -105,7 +123,10 @@ pub(crate) fn walk(
         });
     }
     let ignore = load_ignore(input, &mut report.warnings)?;
-    let mut files = Vec::new();
+    let mut walked = Walked {
+        files: Vec::new(),
+        dirs: Vec::new(),
+    };
     let mut it = WalkDir::new(input)
         .follow_links(false)
         .sort_by_file_name()
@@ -117,17 +138,20 @@ pub(crate) fn walk(
         }
         let rel = rel_path(input, entry.path());
         match visit(input, entry, rel, opts, &ignore, report)? {
-            Visit::File(file) => files.push(file),
+            Visit::File(file) => walked.files.push(file),
+            Visit::Dir(rel) => walked.dirs.push(rel),
             Visit::Prune => it.skip_current_dir(),
             Visit::Next => {}
         }
     }
-    Ok(files)
+    Ok(walked)
 }
 
 /// What the walk does with one entry.
 enum Visit {
     File(FileEntry),
+    /// A directory that is walked into.
+    Dir(String),
     /// A skipped directory: do not descend.
     Prune,
     Next,
@@ -158,9 +182,12 @@ fn visit(
             rel_path: rel,
             file_name: name,
             ident: identity(&meta),
+            mode: mode_bits(&meta),
             path: entry.into_path(),
         }));
-    } else if !kind.is_dir() {
+    } else if kind.is_dir() {
+        return Ok(Visit::Dir(rel));
+    } else {
         report.skipped.excluded.push(rel); // D40: FIFOs, sockets, devices
     }
     Ok(Visit::Next)
@@ -272,20 +299,13 @@ fn add_pattern(builder: &mut GlobSetBuilder, line: &str) -> bool {
 /// must still be a regular file with the identity the walk saw. Residual
 /// risk (accepted in D45): a FIFO swapped in before `open` can block.
 pub(crate) fn classify(path: &Path, expected: Option<(u64, u64)>) -> Result<Class> {
-    let file = File::open(path).map_err(|e| CoreError::io(path, &e))?;
+    let mut file = File::open(path).map_err(|e| CoreError::io(path, &e))?;
     let meta = file.metadata().map_err(|e| CoreError::io(path, &e))?;
     if !meta.is_file() || identity(&meta) != expected {
         return Ok(Class::Changed);
     }
-    // Pre-sized so growth rarely reallocates (old buffers are not wiped).
-    let cap = usize::try_from(meta.len())
-        .unwrap_or(MAX_TEXT)
-        .min(MAX_TEXT)
-        + 1;
-    let mut buf = Zeroizing::new(Vec::with_capacity(cap));
-    file.take(MAX_TEXT as u64 + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| CoreError::io(path, &e))?;
+    let hint = usize::try_from(meta.len()).unwrap_or(MAX_TEXT);
+    let buf = read_wiped(&mut file, hint, MAX_TEXT + 1).map_err(|e| CoreError::io(path, &e))?;
     if buf.len() > MAX_TEXT {
         return Ok(Class::Oversized);
     }
@@ -293,4 +313,34 @@ pub(crate) fn classify(path: &Path, expected: Option<(u64, u64)>) -> Result<Clas
         return Ok(Class::Binary);
     }
     Ok(Class::Text(buf))
+}
+
+/// Reads up to `limit` bytes. The content may hold secrets, so the buffer
+/// never reallocates in place: it grows into a new wiped buffer and the old
+/// one is zeroized on drop (L1). `hint` is the expected size.
+fn read_wiped(file: &mut File, hint: usize, limit: usize) -> io::Result<Zeroizing<Vec<u8>>> {
+    let mut buf = Zeroizing::new(Vec::with_capacity(hint.saturating_add(1).min(limit)));
+    loop {
+        if buf.len() >= limit {
+            return Ok(buf);
+        }
+        if buf.len() == buf.capacity() {
+            let cap = buf.capacity().saturating_mul(2).max(4096).min(limit);
+            let mut bigger = Zeroizing::new(Vec::with_capacity(cap));
+            bigger.extend_from_slice(&buf);
+            buf = bigger;
+        }
+        let len = buf.len();
+        let room = (buf.capacity() - len).min(limit - len);
+        buf.resize(len + room, 0);
+        match file.read(&mut buf[len..]) {
+            Ok(0) => {
+                buf.truncate(len);
+                return Ok(buf);
+            }
+            Ok(n) => buf.truncate(len + n),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => buf.truncate(len),
+            Err(e) => return Err(e),
+        }
+    }
 }

@@ -10,7 +10,8 @@ use std::sync::LazyLock;
 /// The token regex from SPEC §4 v1.1 (no `\b`; the whole match is the key).
 pub const TOKEN_PATTERN: &str = "VEILCODE_[A-Z0-9_]{1,24}_[0-9a-f]{8}";
 
-const NAME_MAX: usize = 24;
+/// The longest NAME (SPEC §4).
+pub(crate) const NAME_MAX: usize = 24;
 
 static TOKEN_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(TOKEN_PATTERN).ok());
 

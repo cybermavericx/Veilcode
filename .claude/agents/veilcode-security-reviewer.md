@@ -29,6 +29,16 @@ Review `git diff main...HEAD` (and the files it touches) against `CLAUDE.md`, th
 5. **Tokens and detection:** regex per SPEC §4 (no `\b`, an a–f letter in HEX8); round-trip safety; restore never replaces non-vault tokens.
 6. **Supply chain:** new deps limited to SPEC §9, added via `cargo add`; `Cargo.lock` committed; Actions pinned by SHA with VERIFY_LOG rows.
 7. **Repo hygiene:** no secret-shaped literals (generated at runtime only), no `proptest-regressions/`, no AI attribution in commits (`git log --format='%an <%ae>%n%b' main..HEAD`).
+8. **Retention (SPEC v1.2 §6.2 step 6, §6.4, §7; D60–D65):**
+   - Forget runs only after every output write and fsync has succeeded; there is no path where an error forgets the session, and no path where a clean, non-`keep` restore keeps it.
+   - The "clean" check covers all three counts.
+   - Shared entries survive.
+   - Expired sessions are purged on **every** successful open and saved immediately.
+   - `expires_at` is validated on deserialize.
+   - The vault file is deleted, not saved empty, when the last session goes. The deletion is under the D28 lock, with no tmp file left behind.
+   - Status, purge and open results carry counts and times only.
+   - The Clock is not a production backdoor: a manual clock is never selectable from the CLI or GUI.
+   - The docs (README, THREAT_MODEL) state the D65 limits honestly and do not overclaim "secure deletion".
 
 ## Report format
 List findings ranked by severity: **Critical / High / Medium / Low / Info**. For each give the file:line, the concrete failure scenario (input → bad outcome) and the fix direction. Then give the checklist table. Do not pad: if nothing is wrong, say "no findings" and show the evidence commands you ran.

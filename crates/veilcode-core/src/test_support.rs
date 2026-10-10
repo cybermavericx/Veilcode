@@ -132,3 +132,84 @@ fn helpers_write_tree_and_hash_it() {
 fn helpers_assert_no_secret_shows_preview_only() {
     assert_no_secret(b"xx abc yy", &["abc"]);
 }
+
+/// Scans `dir` with default options.
+pub(crate) fn scan_dir(dir: &Path) -> crate::ScanReport {
+    crate::scan(dir, &crate::ScanOptions::default()).expect("scan")
+}
+
+/// Scans `input` and masks every finding into `out`.
+pub(crate) fn mask_all(input: &Path, out: &Path, vault: &mut Vault) -> crate::MaskReport {
+    let report = scan_dir(input);
+    let (sel, opts) = (crate::Selection::All, crate::MaskOptions::default());
+    crate::mask(&report, &sel, input, out, vault, &opts).expect("mask")
+}
+
+/// True if `dir` exists and has no entries.
+pub(crate) fn dir_is_empty(dir: &Path) -> bool {
+    std::fs::read_dir(dir).expect("read_dir").next().is_none()
+}
+
+/// Every file's bytes under `dir`, concatenated with a NUL separator.
+pub(crate) fn all_bytes(dir: &Path) -> Vec<u8> {
+    let mut out = Vec::new();
+    for rel in tree_hashes(dir).keys() {
+        out.extend(std::fs::read(dir.join(rel)).expect("read file"));
+        out.push(0);
+    }
+    out
+}
+
+/// The vault token whose value is `secret` (panics with a preview only).
+pub(crate) fn token_for(vault: &Vault, secret: &[u8]) -> crate::Token {
+    let all = vault.sessions().iter().flat_map(|s| s.tokens.iter());
+    let found = all
+        .into_iter()
+        .find(|t| vault.value(t).is_some_and(|v| v.expose() == secret));
+    match found {
+        Some(t) => t.clone(),
+        None => panic!(
+            "no token for {}",
+            SecretBytes::new(secret.to_vec()).preview()
+        ),
+    }
+}
+
+/// Reads a file under `dir`.
+pub(crate) fn read(dir: &Path, rel: &str) -> Vec<u8> {
+    std::fs::read(dir.join(rel)).expect("read file")
+}
+
+/// Secrets planted by `sample_tree`.
+pub(crate) struct Sample {
+    pub(crate) pw: String,
+    pub(crate) key: String,
+    pub(crate) pat: String,
+}
+
+impl Sample {
+    pub(crate) fn all(&self) -> [&str; 3] {
+        [&self.pw, &self.key, &self.pat]
+    }
+}
+
+/// `.env` (D2), `wp-config.php` (D3) and `src/app.js` (D1 PAT), one secret each.
+pub(crate) fn sample_tree(dir: &Path) -> Sample {
+    let s = Sample {
+        pw: fake_password(),
+        key: fake_password(),
+        pat: fake_github_pat(),
+    };
+    let env = format!("APP=demo\nDB_PASSWORD={}\n", s.pw);
+    let php = format!("<?php\ndefine('AUTH_KEY', '{}');\n", s.key);
+    let js = format!("let a = 1;\nconst t = \"{}\";\nlet z = 2;\n", s.pat);
+    write_tree(
+        dir,
+        &[
+            (".env", env.as_bytes()),
+            ("wp-config.php", php.as_bytes()),
+            ("src/app.js", js.as_bytes()),
+        ],
+    );
+    s
+}
