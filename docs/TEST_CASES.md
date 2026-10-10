@@ -217,7 +217,7 @@ Type: auto
 ### S22 — unsafe `.veilcodeignore` (D44)
 Type: auto
 A `.veilcodeignore` of 1 MiB + 1 byte makes the scan fail with the D44 error. On Unix, a `.veilcodeignore` that is a symlink, or a FIFO created via `mkfifo`, also gives the D44 error without blocking. The FIFO case is skipped if mkfifo is unavailable; never use libc for it.
-### S23 — non-UTF-8 file name (D46, Unix)
+### S23 — non-UTF-8 file name (D46, Unix except macOS, whose APFS rejects such names)
 Type: auto
 A file named with byte `0xFF` holding a PAT is not scanned and is listed under `skipped.non_utf8_name`, and no `rel_path` collides.
 ### S24 — line-target allowlists are ignored (D47)

@@ -562,18 +562,22 @@ fn s21_git_case_and_trailing_dot_variants() {
             ("sub/.Git/config", format!("t = {p2}\n").as_bytes()),
         ],
     );
-    let mut secrets = vec![p1, p2];
-    let mut want = vec![".GIT".to_string(), "sub/.Git".to_string()];
+    // Windows strips trailing dots from names, so `.git.` is a Unix-only case.
     #[cfg(unix)]
-    {
+    let (secrets, want) = {
         let p3 = fake_github_pat();
         write_tree(
             dir.path(),
             &[(".git./config", format!("t = {p3}\n").as_bytes())],
         );
-        secrets.push(p3);
-        want = vec![".GIT".into(), ".git.".into(), "sub/.Git".into()];
-    }
+        let want: Vec<String> = vec![".GIT".into(), ".git.".into(), "sub/.Git".into()];
+        (vec![p1, p2, p3], want)
+    };
+    #[cfg(not(unix))]
+    let (secrets, want) = (
+        vec![p1, p2],
+        vec![".GIT".to_string(), "sub/.Git".to_string()],
+    );
     let opts = ScanOptions {
         no_default_excludes: true,
     };
@@ -583,7 +587,8 @@ fn s21_git_case_and_trailing_dot_variants() {
     assert_no_secret(&json(&r), &secrets);
 }
 
-#[cfg(unix)]
+// macOS (APFS) refuses to create non-UTF-8 file names, so only other Unixes can test D46.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn s23_non_utf8_file_name() {
     use std::os::unix::ffi::OsStrExt;
