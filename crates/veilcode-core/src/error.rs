@@ -30,6 +30,12 @@ pub enum CoreError {
     /// The OS random number generator failed.
     #[error("OS random number generator failed")]
     Random,
+    /// `.veilcodeignore` is not a regular file of at most 1 MiB (D44).
+    #[error("unsafe .veilcodeignore (must be a regular file ≤ 1 MiB)")]
+    UnsafeIgnoreFile,
+    /// The built-in gitleaks rule file could not be parsed.
+    #[error("built-in detection rules failed to load")]
+    RulesLoad,
     /// Encrypting the vault failed.
     #[error("vault encryption failed")]
     Encrypt,

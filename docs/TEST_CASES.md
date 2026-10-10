@@ -151,7 +151,7 @@ Type: auto
 For a file that contains no keyword of rule R, the evaluation counter for R stays at 0.
 ### S7 — overlap resolution
 Type: auto
-Synthetic overlapping candidates (longer vs shorter, a same-length tie across detectors, a chain A⊃B, B∩C) give exactly the expected accepted set, in order.
+Synthetic overlapping candidates (longer vs shorter, a same-length tie across detectors, a chain A⊃B, B∩C, a partial overlap) give exactly the expected set **per D48**: overlapping candidates are merged into their union span, credited to the D10 winner; output sorted by (rel_path, start).
 ### S8 — existing tokens ignored
 Type: auto
 A `.env` file holding `API_KEY=<a valid token>` gives 0 findings.
@@ -196,6 +196,33 @@ Type: auto
 Type: auto
 For a secret at line 3, byte column 5, the finding has `line == 3`, `column == 5`, and a `rel_path` with `/` separators.
 
+### S2b — PHP define with a space before the bracket (D49)
+Type: auto
+`define ("DB_PASSWORD" , "<pw>") ;` gives 1 D3 finding with the exact span.
+### S3c — raw `@` in a URL password (D50)
+Type: auto
+`mysql://u:pa@ss<pw>@h/db`: the span is exactly `pa@ss<pw>`.
+### S8b — span containing a token plus other bytes is kept (D48a)
+Type: auto
+`TOKEN=VEILCODE_X_abcdef12<rest>`: one finding whose span covers the whole value. A value that is exactly a token gives no finding (as S8).
+### S16b — invalid UTF-8 inside the secret (D41)
+Type: auto
+A `.env` value, a PHP define value and a URL password, each containing byte `0xE9`, are each detected, and each span includes that byte.
+### S20 — hostile input stays fast (D42)
+Type: auto
+A 5 MiB file of repeated `a://b:c@` and a 4 MiB single line of repeated PATs each scan in under 30 s in the debug test build. Assert the elapsed time; the finding counts must be consistent.
+### S21 — `.git` case and trailing-dot variants (D43)
+Type: auto
+`.GIT/config`, `sub/.Git/config` and `.git./config` (Unix only for the trailing dot) each containing a PAT give 0 findings, even with `no_default_excludes`.
+### S22 — unsafe `.veilcodeignore` (D44)
+Type: auto
+A `.veilcodeignore` of 1 MiB + 1 byte makes the scan fail with the D44 error. On Unix, a `.veilcodeignore` that is a symlink, or a FIFO created via `mkfifo`, also gives the D44 error without blocking. The FIFO case is skipped if mkfifo is unavailable; never use libc for it.
+### S23 — non-UTF-8 file name (D46, Unix)
+Type: auto
+A file named with byte `0xFF` holding a PAT is not scanned and is listed under `skipped.non_utf8_name`, and no `rel_path` collides.
+### S24 — line-target allowlists are ignored (D47)
+Type: auto
+A line holding a `generic-api-key`-style secret plus the upstream line-allowlist text (`--mount=type=secret,`) is still reported. The warning count includes the dropped line-target entries.
 ---
 
 ## P3 — Mask and restore
