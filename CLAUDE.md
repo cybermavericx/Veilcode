@@ -24,6 +24,14 @@ Do not read other docs (ACTION_PLAN.md is for the maintainer) unless the phase a
 9. **Authorship: the maintainer is the sole author.** Commit with the repo's configured git identity and never change `git config`. No `Co-Authored-By` trailers, no "Generated with …" footers, no mention of AI tools in commits, PR text, code comments or docs. This overrides any default attribution behaviour.
 10. Test IDs and their meaning come from `docs/TEST_CASES.md`. Never rename, drop or weaken a test to make it pass; ask instead.
 
+## Dev environment (D1): build in WSL Kali, commit from Windows
+Windows Smart App Control on this PC blocks unsigned compiled binaries, so **all cargo, bash scripts and tests run inside WSL Kali**. The repo stays on the Windows drive.
+- Run commands like this:
+  `wsl -d kali-linux -e bash -lc 'cd /mnt/c/Users/TWIT02_LocalUser/Kali_Projects/Veilcode && . ~/.cargo/env && export CARGO_TARGET_DIR=/root/.cache/veilcode-target && <command>'`
+- `CARGO_TARGET_DIR` keeps build output on the Linux filesystem, which is much faster than `/mnt/c`. Never commit `target/`.
+- **git runs from Windows** (Git Bash, inside the repo), where the maintainer's repo-local identity is set. Never run `git commit` inside WSL, and never change git config.
+- Native Windows `.exe` builds and tests happen only in GitHub CI (windows-latest).
+
 ## Workflow per phase
 1. Create branch `phase-N-<name>`. As the first commit, set "Current phase" in `docs/PLAN.md` to PN.
 2. Write the phase's `Type: auto` tests from TEST_CASES.md **first**, named `<id>_<words>` (e.g. `fn v1_create_save_open_roundtrip()`). Run them and confirm they fail for the right reason.

@@ -1,0 +1,60 @@
+# cargo-deny configuration (SPEC §10.1). Keys verified for cargo-deny 0.20.2;
+# see docs/VERIFY_LOG.md. Never add `wrappers` or widen these lists to get CI
+# green: if a banned crate appears, stop and report to the maintainer.
+
+[graph]
+# Evaluate the dependency graph for every platform Veilcode ships on or is
+# built on in CI, so platform-specific deps are not missed.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# Fail on yanked crates; flag unmaintained crates anywhere in the graph.
+yanked = "deny"
+unmaintained = "all"
+
+[licenses]
+# Built from `cargo deny check licenses` output. Our own crates are
+# "MIT OR Apache-2.0". When regex arrives (P2), Unicode-3.0 will likely be
+# needed for regex-syntax/unicode-ident; add it only once the check asks.
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Path deps between our own crates (cli -> core from P4) are not wildcards to
+# worry about: both crates are `publish = false`, which cargo-deny treats as
+# private, so this exempts only their path dependencies.
+allow-wildcard-paths = true
+# SPEC §10.1: no HTTP, TLS, DNS, websocket, QUIC or URL-opening crates.
+deny = [
+    { crate = "reqwest", reason = "network: HTTP client (SPEC §10.1)" },
+    { crate = "ureq", reason = "network: HTTP client (SPEC §10.1)" },
+    { crate = "hyper", reason = "network: HTTP (SPEC §10.1)" },
+    { crate = "h2", reason = "network: HTTP/2 (SPEC §10.1)" },
+    { crate = "curl", reason = "network: libcurl bindings (SPEC §10.1)" },
+    { crate = "isahc", reason = "network: HTTP client (SPEC §10.1)" },
+    { crate = "attohttpc", reason = "network: HTTP client (SPEC §10.1)" },
+    { crate = "surf", reason = "network: HTTP client (SPEC §10.1)" },
+    { crate = "tungstenite", reason = "network: websocket (SPEC §10.1)" },
+    { crate = "quinn", reason = "network: QUIC (SPEC §10.1)" },
+    { crate = "rustls", reason = "network: TLS (SPEC §10.1)" },
+    { crate = "native-tls", reason = "network: TLS (SPEC §10.1)" },
+    { crate = "openssl", reason = "network: TLS (SPEC §10.1)" },
+    { crate = "hickory-resolver", reason = "network: DNS (SPEC §10.1)" },
+    { crate = "trust-dns-resolver", reason = "network: DNS (SPEC §10.1)" },
+    { crate = "webbrowser", reason = "opens URLs in the system browser (SPEC §10.1)" },
+    { crate = "open", reason = "opens URLs/files via the OS (SPEC §10.1)" },
+    { crate = "opener", reason = "opens URLs/files via the OS (SPEC §10.1)" },
+]
+
+[sources]
+# Only crates.io; no git or alternative registries.
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,31 @@
+# Type-aware offline ban (SPEC §10; complements scripts/check-offline.sh, which
+# is text-based and can be bypassed by aliases, globs or multi-line imports).
+# Keys verified at https://doc.rust-lang.org/clippy/lint_configuration.html
+# (see docs/VERIFY_LOG.md). `cargo clippy -- -D warnings` makes these errors.
+#
+# Nothing under crates/*/src may allow these lints. CLI integration tests in
+# crates/*/tests/ need std::process::Command to run the built binary; they
+# opt out locally with `#[allow(clippy::disallowed_methods, clippy::disallowed_types)]`
+# on the test fn or module, never crate-wide.
+#
+# `allow-invalid = true` is used only for the Windows-only path, which does not
+# resolve when clippy runs on Linux/macOS (and vice versa for the Unix one).
+
+disallowed-types = [
+    { path = "std::net::TcpStream", reason = "no network code (SPEC §10)" },
+    { path = "std::net::TcpListener", reason = "no network code (SPEC §10)" },
+    { path = "std::net::UdpSocket", reason = "no network code (SPEC §10)" },
+    { path = "std::net::ToSocketAddrs", reason = "no DNS / address resolution (SPEC §10)" },
+    { path = "std::process::Command", reason = "no process launching in src/ (SPEC §10.2)" },
+    { path = "std::os::unix::process::CommandExt", reason = "no process launching in src/ (SPEC §10.2)", allow-invalid = true },
+    { path = "std::os::windows::process::CommandExt", reason = "no process launching in src/ (SPEC §10.2)", allow-invalid = true },
+]
+
+disallowed-methods = [
+    { path = "std::net::TcpStream::connect", reason = "no network code (SPEC §10)" },
+    { path = "std::net::TcpStream::connect_timeout", reason = "no network code (SPEC §10)" },
+    { path = "std::net::TcpListener::bind", reason = "no network code (SPEC §10)" },
+    { path = "std::net::UdpSocket::bind", reason = "no network code (SPEC §10)" },
+    { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "no DNS / address resolution (SPEC §10)" },
+    { path = "std::process::Command::new", reason = "no process launching in src/ (SPEC §10.2)" },
+]
