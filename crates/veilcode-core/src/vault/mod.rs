@@ -3,12 +3,17 @@
 mod crypto;
 mod format;
 mod model;
+mod session;
 
 pub use model::{Session, SessionId};
+pub(crate) use session::{DEFAULT_TTL_DAYS, ttl_secs};
+pub use session::{PurgeResult, VaultStatus};
 
+use crate::clock::{Clock, SystemClock};
 use crate::error::{CoreError, Result};
 use crate::hex;
 use crate::rng::{OsRandom, RandomSource};
+use crate::scan::ScanOptions;
 use crate::secret::{SecretBytes, SecretString};
 use crate::token::{Token, TokenGen};
 use crypto::Key;
@@ -20,7 +25,6 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Minimum passphrase length in Unicode scalar values (D8).
 const MIN_PASSPHRASE_CHARS: usize = 12;
@@ -34,6 +38,8 @@ pub struct Vault {
     data: VaultData,
     /// sha256 of the file as last read or written; `None` if not yet saved (D7).
     file_hash: Option<[u8; 32]>,
+    /// Expired sessions purged by the open that produced this value (D61).
+    expired_removed: usize,
 }
 
 impl fmt::Debug for Vault {
@@ -71,11 +77,30 @@ impl Vault {
             key,
             data: VaultData::default(),
             file_hash: None,
+            expired_removed: 0,
         })
     }
 
-    /// Opens and decrypts the vault at `path`.
+    /// Opens and decrypts the vault at `path`, then purges expired
+    /// sessions by the system clock (D61; see `expired_removed`).
     pub fn open(path: &Path, pass: &SecretString) -> Result<Vault> {
+        Vault::open_with_clock(path, pass, &SystemClock)
+    }
+
+    /// `open` with an injected clock. If any session expired
+    /// (`expires_at <= now`), the vault is saved (or removed, D62) at once.
+    /// Crate-internal (D70): no production clock override.
+    pub(crate) fn open_with_clock(
+        path: &Path,
+        pass: &SecretString,
+        clock: &dyn Clock,
+    ) -> Result<Vault> {
+        let mut vault = Vault::decrypt(path, pass)?;
+        vault.expired_removed = vault.purge_expired(clock.now_unix())?;
+        Ok(vault)
+    }
+
+    fn decrypt(path: &Path, pass: &SecretString) -> Result<Vault> {
         let file = std::fs::read(path).map_err(|e| CoreError::io(path, &e))?;
         let (header, ciphertext) = Header::parse(&file)?;
         let key = crypto::derive_key(&header.params, pass, &header.salt)?;
@@ -89,6 +114,7 @@ impl Vault {
             key,
             data,
             file_hash: Some(sha256(&file)),
+            expired_removed: 0,
         })
     }
 
@@ -184,33 +210,72 @@ impl Vault {
     }
 
     /// The secret for `token`. Crate-internal: only restore reads values.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by restore from P3"))]
     pub(crate) fn value(&self, token: &Token) -> Option<&SecretBytes> {
         self.data.entries.get(token).map(|e| &e.value)
     }
 
-    /// Records a new session (D24 id, unix-seconds `created`) and returns its id.
-    pub fn add_session(&mut self, source_label: &str, tokens: Vec<Token>) -> Result<SessionId> {
+    /// Records a new session (D24 id, `created` now, D61 `expires_at`).
+    pub(crate) fn add_session(
+        &mut self,
+        source_label: &str,
+        tokens: Vec<Token>,
+        ttl_days: u32,
+        scan_options: ScanOptions,
+    ) -> Result<SessionId> {
+        let ttl = session::ttl_secs(ttl_days)?;
         let mut raw = [0u8; 8];
         OsRandom.fill(&mut raw)?;
         let id = SessionId(hex::encode(&raw));
-        let created = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let created = SystemClock.now_unix();
         self.data.sessions.push(Session {
             id: id.clone(),
             created,
+            expires_at: created.saturating_add(ttl),
             source_label: source_label.to_string(),
+            scan_options,
             tokens,
         });
         Ok(id)
+    }
+
+    /// Test shorthand: a session with the default TTL and walk options.
+    #[cfg(test)]
+    pub(crate) fn add_test_session(
+        &mut self,
+        label: &str,
+        tokens: Vec<Token>,
+    ) -> Result<SessionId> {
+        self.add_session(
+            label,
+            tokens,
+            session::DEFAULT_TTL_DAYS,
+            ScanOptions::default(),
+        )
     }
 
     /// All sessions, oldest first.
     pub fn sessions(&self) -> &[Session] {
         &self.data.sessions
     }
+
+    /// A copy of the decrypted state (mask rolls back to it on failure).
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        Snapshot(self.data.clone())
+    }
+
+    /// Puts back a `snapshot` (memory only).
+    pub(crate) fn restore_snapshot(&mut self, snapshot: Snapshot) {
+        self.data = snapshot.0;
+    }
+
+    /// Sessions removed as expired by the open that produced this vault (D61).
+    pub fn expired_removed(&self) -> usize {
+        self.expired_removed
+    }
 }
+
+/// An in-memory copy of the vault contents (values wiped on drop).
+pub(crate) struct Snapshot(VaultData);
 
 /// Creates the tmp file exclusively (never follows or overwrites one), 0600 on Unix.
 fn create_tmp(tmp: &Path) -> Result<File> {
@@ -284,8 +349,9 @@ mod tests {
             let t = v.get_or_create_token(val, &format!("key{i}"), "rule", &[]);
             toks.push(t.expect("token"));
         }
-        v.add_session("first", toks[..2].to_vec()).expect("session");
-        v.add_session("second", toks[2..].to_vec())
+        v.add_test_session("first", toks[..2].to_vec())
+            .expect("session");
+        v.add_test_session("second", toks[2..].to_vec())
             .expect("session");
         v.save().expect("save");
         let r = Vault::open(&dir.path().join("vault.vc"), &test_pass()).expect("open");
@@ -458,10 +524,10 @@ mod tests {
         let (path, _) = saved_small_vault(dir.path());
         let mut a = Vault::open(&path, &test_pass()).expect("open a");
         let mut b = Vault::open(&path, &test_pass()).expect("open b");
-        b.add_session("from b", Vec::new()).expect("session");
+        b.add_test_session("from b", Vec::new()).expect("session");
         b.save().expect("save b");
         let after_b = std::fs::read(&path).expect("read");
-        a.add_session("from a", Vec::new()).expect("session");
+        a.add_test_session("from a", Vec::new()).expect("session");
         let err = a.save().expect_err("a must be refused");
         assert!(matches!(err, CoreError::VaultChanged));
         assert_eq!(
@@ -598,5 +664,52 @@ mod tests {
         b.save().expect("save b");
         assert!(matches!(a.save(), Err(CoreError::VaultChanged)));
         assert!(!dir.path().join("vault.vc.tmp").exists());
+    }
+
+    #[test]
+    fn se1_sessions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let (shared, a, b) = (fake_password(), fake_password(), fake_password());
+        let mut tok = |s: &str| {
+            v.get_or_create_token(&secret(s), "k", "rule", &[])
+                .expect("token")
+        };
+        let (ts, ta, tb) = (tok(&shared), tok(&a), tok(&b));
+        let one = v
+            .add_test_session("one", vec![ts.clone(), ta.clone()])
+            .expect("s1");
+        v.add_test_session("two", vec![ts.clone(), tb.clone(), ts.clone()])
+            .expect("s2");
+        let counts: Vec<_> = v
+            .sessions()
+            .iter()
+            .map(|s| (s.source_label.as_str(), s.tokens.len()))
+            .collect();
+        assert_eq!(counts, vec![("one", 2), ("two", 3)]);
+        v.delete_session(&one).expect("delete");
+        assert!(
+            v.value(&ts)
+                .is_some_and(|x| x.expose() == shared.as_bytes())
+        );
+        assert!(v.value(&ta).is_none());
+        assert!(v.value(&tb).is_some());
+        assert_eq!(v.data.entries.len(), 2);
+        let labels: Vec<_> = v
+            .sessions()
+            .iter()
+            .map(|s| s.source_label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["two"]);
+        let err = v.delete_session(&one).expect_err("unknown id");
+        assert!(matches!(err, CoreError::UnknownSession { ref id } if id == one.as_str()));
+        assert_eq!(err.to_string(), format!("unknown session {}", one.as_str()));
+        v.save().expect("save");
+        let r = Vault::open(&dir.path().join("vault.vc"), &test_pass()).expect("open");
+        assert_eq!((r.sessions().len(), r.data.entries.len()), (1, 2));
+        assert_no_secret(
+            format!("{err:?} {:?}", r.sessions()).as_bytes(),
+            &[&shared, &a, &b],
+        );
     }
 }

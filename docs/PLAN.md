@@ -45,8 +45,8 @@ Tests: S1–S19.
 Acceptance: standard checks ✔ · `cargo test -p veilcode-core s1_` etc. all pass.
 
 ## P3 — Mask and restore (core)
-Implement SPEC §6.1, §6.2, §6.4 and the text functions from §6.3.
-Tests: M1–M10 (including M4b and M6b), R1–R8, X1, SE1, PROP1.
+Implement SPEC §6.1, §6.2 (including step 6, forget by default), §6.4 (sessions and retention: expiry, delete, status, purge, empty-vault removal), the text functions from §6.3, and §7 open-time expiry. The core `Clock` trait lives in `clock.rs`.
+Tests: M1–M11 (including M4b and M6b), R1–R13, X1, SE1, SE2, PROP1, and the lifecycle tests LF1–LF7, LF2b, LF9 (SPEC v1.2 §6.2 step 6, §6.4, §7; D57r, D60–D63, D66).
 Acceptance: standard checks ✔.
 
 ## P4 — CLI
@@ -56,23 +56,26 @@ Commands:
 - `veilcode restore <DIR> --out DIR [--session ID]`
 - `veilcode session list`
 - `veilcode session delete <ID>`
+- `veilcode vault status` (D63: counts and times only)
+- `veilcode vault purge [--yes]` (D63: asks for confirmation unless --yes)
+- `mask` also takes `--ttl-days N` (1–365, default 30); `restore` also takes `--keep` (D60, D61). Every vault-opening command prints "N expired sessions removed" when N > 0. The `--help` text recommends per-project `--vault <project>.vc` (D64).
 
 Global flags: `--vault FILE`, `--passphrase-stdin`, `--report FILE`.
 - The passphrase is prompted with `rpassword` unless `--passphrase-stdin` is given. When the vault is created interactively, the passphrase is asked twice and both entries must match.
 - Exit codes: 0 ok, 2 error. Scan and restore warnings do not change the exit code; restore prints a summary to stderr.
 - `net-audit.sh` is extended to run the full scan → mask → restore under strace.
 
-Tests: C1–C8.
+Tests: C1–C9, LF8.
 Acceptance: standard checks ✔ · net-audit ✔ · manual run on a sample WordPress-style folder (C8, documented in the PR).
 
 ## P5 — CLI release v0.1.0
 - [ ] `.github/workflows/release.yml` triggers on a `v*` tag and builds `veilcode` for **linux-x86_64 and windows-x86_64** (macOS is not released; SPEC §13).
 - [ ] Each release includes SHA256SUMS, an SBOM (`cargo cyclonedx`), and build-provenance attestations (`actions/attest-build-provenance`).
-- [ ] `docs/THREAT_MODEL.md` (expanded SPEC §11) and `docs/VERIFY_OFFLINE.md`. The latter covers:
+- [ ] `docs/THREAT_MODEL.md` (expanded SPEC §11, including the D65 retention limits) and `docs/VERIFY_OFFLINE.md`. The latter covers:
   - Linux: `unshare -rn veilcode ...` and `strace`.
   - Windows: a Firewall outbound-block rule plus Resource Monitor / Wireshark.
   - Verifying checksums and attestations with `gh attestation verify`.
-- [ ] README: install, 60-second demo, honest limitations (detection is best-effort, binaries are unsigned for now, D3 quote limitation).
+- [ ] README: install, 60-second demo, honest limitations (detection is best-effort, binaries are unsigned for now, D3 quote limitation), and the D65 retention section: keep retention short, exclude the data dir from sync and backup, passphrase strength, and malware while unlocked. Also the per-project vault pattern (D64).
 
 Tests: REL1–REL3.
 Acceptance: tag `v0.1.0-rc1` on a fork produces the artifacts and the attestation verifies.
@@ -85,9 +88,9 @@ Acceptance: tag `v0.1.0-rc1` on a fork produces the artifacts and the attestatio
 Screens:
 1. Unlock or create vault
 2. Scan: folder picker, findings list with checkboxes and previews
-3. Mask: output folder, report
-4. Restore: input and output folders, report (new, unknown, missing)
-5. Sessions
+3. Mask: output folder, TTL selector (1–365, default 30), "separate vault for this project" option (D64), report
+4. Restore: input and output folders, "keep session" checkbox (default off), report (new, unknown, missing, plus "session forgotten" or the kept reason)
+5. Sessions: age and expiry columns, delete, "Purge all" with confirmation (D63)
 6. Text Mode: two text areas, plus the warning on restored text
 
 Auto-lock after 10 minutes without input. A "Lock now" button is always visible.

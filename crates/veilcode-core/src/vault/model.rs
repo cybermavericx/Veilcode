@@ -2,6 +2,7 @@
 
 use crate::error::{CoreError, Result};
 use crate::hex;
+use crate::scan::ScanOptions;
 use crate::secret::SecretBytes;
 use crate::token::Token;
 use serde::{Deserialize, Serialize};
@@ -37,14 +38,53 @@ impl SessionId {
     }
 }
 
-/// One mask run (SPEC §6.4). Holds no secret values.
+/// The longest session lifetime (D61): 365 days.
+pub(crate) const MAX_TTL_SECS: u64 = 365 * 86_400;
+
+/// One mask run (SPEC §6.4, §7). Holds no secret values.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SessionRecord")]
 pub struct Session {
     pub id: SessionId,
     /// Unix seconds.
     pub created: u64,
+    /// Unix seconds; the session is expired when `expires_at <= now` (D61).
+    pub expires_at: u64,
     pub source_label: String,
+    /// The walk options of the mask, reused by restore (D57r).
+    pub scan_options: ScanOptions,
     pub tokens: Vec<Token>,
+}
+
+/// A session as read from JSON, before the D61 `expires_at` check.
+#[derive(Deserialize)]
+struct SessionRecord {
+    id: SessionId,
+    created: u64,
+    expires_at: u64,
+    source_label: String,
+    scan_options: ScanOptions,
+    tokens: Vec<Token>,
+}
+
+impl TryFrom<SessionRecord> for Session {
+    type Error = &'static str;
+
+    /// D61: `created < expires_at <= created + 365 days`.
+    fn try_from(r: SessionRecord) -> std::result::Result<Self, Self::Error> {
+        let max = r.created.saturating_add(MAX_TTL_SECS);
+        if r.created >= r.expires_at || r.expires_at > max {
+            return Err("invalid expires_at");
+        }
+        Ok(Session {
+            id: r.id,
+            created: r.created,
+            expires_at: r.expires_at,
+            source_label: r.source_label,
+            scan_options: r.scan_options,
+            tokens: r.tokens,
+        })
+    }
 }
 
 /// One vault entry: the secret value and where its token name came from.
@@ -66,7 +106,7 @@ impl fmt::Debug for Entry {
 }
 
 /// Decrypted vault contents.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct VaultData {
     pub(crate) sessions: Vec<Session>,
     pub(crate) entries: BTreeMap<Token, Entry>,
@@ -161,7 +201,7 @@ mod tests {
 
     fn json(token: &str, session_id: &str) -> Vec<u8> {
         format!(
-            r#"{{"version":1,"sessions":[{{"id":"{session_id}","created":1,"source_label":"s","tokens":["{token}"]}}],"entries":{{}}}}"#
+            r#"{{"version":1,"sessions":[{{"id":"{session_id}","created":1,"expires_at":2,"source_label":"s","scan_options":{{"no_default_excludes":false}},"tokens":["{token}"]}}],"entries":{{}}}}"#
         )
         .into_bytes()
     }

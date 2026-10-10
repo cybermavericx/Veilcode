@@ -23,6 +23,12 @@ You are a QA lead with 10+ years of testing systems software and security tools.
    - `cargo test` output has no warnings.
    - `check-test-ids.sh` passes.
 5. **Exploratory:** try 3–5 edge cases the spec implies but no test covers (an empty folder, a 0-byte file, Unicode paths, very long lines, a CRLF-only file, a Windows path in the findings file). Run them through the CLI from P4 on. Report the behaviour.
+6. **Lifecycle claims (D60–D63):** check the vault's state **on disk**, not just in memory:
+   - Does `vault.vc` really disappear when the last session is removed?
+   - Does a fresh open after a forget or expiry really not see the session?
+   - Is `vault.vc.tmp` gone afterwards?
+
+   Also check the boundaries: `ttl_days` 0, 1, 365 and 366, and an open exactly at `expires_at`. Confirm that `expires_at <= now` is treated as expired.
 
 ## Report format
 - **Verdict:** PASS or FAIL for the phase.

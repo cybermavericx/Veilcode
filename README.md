@@ -31,6 +31,25 @@ Veilcode cannot recognise every secret. Anything no detector matches stays in
 the masked output. Review the report before sharing the masked folder, and use
 `.veilcodeignore` to exclude files.
 
+## Secret retention
+
+The vault holds the real secrets of every project that has not finished its
+round trip, so Veilcode keeps it as small as possible:
+
+- After a clean restore, the project's session and its secrets are forgotten
+  (use `--keep` to retain them).
+- Sessions expire after 30 days by default (`--ttl-days`, 1–365).
+- An empty vault file is deleted.
+- A separate vault per project (`--vault <project>.vc`) is recommended.
+
+Limits you should know about:
+
+- Deleting rewrites or removes the encrypted file, but SSD wear-levelling,
+  backups or cloud sync of the Veilcode data folder may keep older encrypted
+  copies. Exclude that folder from sync and backup.
+- Your passphrase is the last line of defence for any copy that survives.
+- Malware running while the vault is unlocked defeats all of this.
+
 ## Prior art
 
 Other projects already work on masking sensitive data before it reaches an

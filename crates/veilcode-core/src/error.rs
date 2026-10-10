@@ -39,6 +39,47 @@ pub enum CoreError {
     /// Encrypting the vault failed.
     #[error("vault encryption failed")]
     Encrypt,
+    /// The input no longer matches the ScanReport (SPEC §6.1 step 3, D13).
+    #[error("file changed since scan — rescan")]
+    Rescan,
+    /// A selected finding does not fit its scanned file (bad offsets or hash).
+    #[error("finding {id} does not match the scanned file — rescan")]
+    BadFinding { id: String },
+    /// The selection names a finding id that is not in the report (D51).
+    #[error("unknown finding id {id}")]
+    UnknownFinding { id: String },
+    /// No session with this id (SPEC §6.4).
+    #[error("unknown session {id}")]
+    UnknownSession { id: String },
+    /// A `rel_path` failed validation (SPEC §6.1 step 2, D14).
+    #[error("invalid relative path {rel_path:?}")]
+    BadRelPath { rel_path: String },
+    /// The output folder is the input folder or inside it (SPEC §6.1 step 1).
+    #[error("output folder must not be inside the input folder")]
+    OutputInsideInput,
+    /// The output folder already exists; Veilcode creates it itself (D68).
+    #[error("output folder already exists: {}", path.display())]
+    OutputExists { path: PathBuf },
+    /// Unix: the output's nearest existing parent is group/other-writable
+    /// without the sticky bit (D68).
+    #[error("unsafe output location (parent writable by others, no sticky bit): {}", path.display())]
+    UnsafeOutputParent { path: PathBuf },
+    /// A run failed after creating its output folder (D69).
+    #[error("{}", partial_message(*.cleaned, .dir, .cause))]
+    PartialOutput {
+        cleaned: bool,
+        dir: PathBuf,
+        cause: Box<CoreError>,
+    },
+    /// Restore without a session id on a vault with no matching session (D73).
+    #[error("vault has no sessions to restore")]
+    NoSession,
+    /// `ttl_days` outside 1–365 (D61).
+    #[error("ttl_days must be between 1 and 365")]
+    BadTtl,
+    /// Text Mode output would not be valid UTF-8.
+    #[error("text result is not valid UTF-8")]
+    TextNotUtf8,
 }
 
 impl CoreError {
@@ -48,6 +89,18 @@ impl CoreError {
             path: path.to_path_buf(),
             kind: err.kind(),
         }
+    }
+}
+
+/// D69 message: cleanup failure must tell the user to delete the folder.
+fn partial_message(cleaned: bool, dir: &std::path::Path, cause: &CoreError) -> String {
+    if cleaned {
+        format!("{cause} (partial output removed)")
+    } else {
+        format!(
+            "{cause}; output folder may contain real secrets — delete it: {}",
+            dir.display()
+        )
     }
 }
 
