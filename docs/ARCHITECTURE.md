@@ -84,7 +84,7 @@ crates/veilcode-core/src/
 │   └── model.rs      # VaultData { version, sessions, entries: BTreeMap<Token, Entry{value_hex,name,rule_id}> }
 │                     #   Session { id, created, expires_at (validated, D61), source_label, scan_options (D57r), tokens }
 ├── scan/
-│   ├── mod.rs        # pub fn scan(input, &ScanOptions) → Result<ScanReport>
+│   ├── mod.rs        # pub fn scan(input, &ScanOptions, &Profile) → Result<ScanReport>
 │   ├── walk.rs       # walkdir (no follow), .git hard-exclude, default excludes, .veilcodeignore (globset),
 │   │                 #   classify: Text | Binary | Oversized | Symlink; sha256 per text file
 │   ├── finding.rs    # Finding, ScanReport{findings, scanned_files, skipped, warnings}, finding id, preview
@@ -95,8 +95,10 @@ crates/veilcode-core/src/
 │       │             #   keyword prefilter, secretGroup, entropy (ported from pinned detect.go)
 │       ├── env.rs    # D2 (+ value trimming rules)
 │       ├── php.rs    # D3
-│       └── url.rs    # D4
-├── mask.rs           # pub fn mask(&ScanReport, selection, input, out, &mut Vault, opts) → MaskReport
+│       ├── url.rs    # D4
+│       └── custom.rs # D5 custom-key assignment, only for profile extra_keys (D77)
+├── profile.rs        # Profile { extra_keys, ignored_keys, ignored[] }: load (D79 safety) / save (atomic) / edit API (D80); normalise_key (D76); never read from input (D75)
+├── mask.rs           # pub fn mask(&ScanReport, selection, input, out, &mut Vault, opts) → MaskReport (default selection excludes ignored, D78)
 ├── restore.rs        # pub fn restore(input, out, &mut Vault, session, keep) → RestoreReport; forget step last (D60)
 ├── vault/session.rs  # retention (child of vault, so it can reach private fields): forget(session), purge_expired(now), delete, status, purge; empty vault → file removed (D60–D63)
 ├── clock.rs          # trait Clock { now_unix() }; SystemClock; ManualClock is #[cfg(test)] and open_with_clock is pub(crate) (D70). Used by expiry (D61) and GUI auto-lock
@@ -137,7 +139,8 @@ crates/veilcode-core/src/
 
 ## 6. Public core API (the only surface the CLI and GUI may use)
 ```rust
-pub fn scan(input: &Path, opts: &ScanOptions) -> Result<ScanReport, CoreError>;
+pub fn scan(input: &Path, opts: &ScanOptions, profile: &Profile) -> Result<ScanReport, CoreError>;
+pub struct Profile; // load / save / add_extra_key / remove_extra_key / ignore_key / unignore_key / ignore_finding(&Finding, Scope) / unignore_finding / list
 pub fn mask(report: &ScanReport, selection: &Selection, input: &Path, out: &Path,
             vault: &mut Vault, opts: &MaskOptions) -> Result<MaskReport, CoreError>;
 pub fn restore(input: &Path, out: &Path, vault: &mut Vault, session: Option<&SessionId>, keep: bool)
@@ -153,7 +156,7 @@ The exact signatures are settled in P1–P3 tests. Changing this surface after P
 ```
 crates/veilcode-cli/
 ├── src/main.rs        # parse → dispatch → map CoreError to exit 2 + message (anyhow context, no values)
-├── src/args.rs        # clap derive: scan | mask (--ttl-days) | restore (--keep) | session {list,delete} | vault {status,purge [--yes]}; global flags
+├── src/args.rs        # clap derive: scan | mask (--ttl-days) | restore (--keep) | session {list,delete} | vault {status,purge [--yes]} | profile {list,add-key,remove-key,ignore-key,unignore-key,ignore,unignore}; global flags incl. --profile
 ├── src/passphrase.rs  # rpassword prompt (twice on create) or one stdin line
 ├── src/output.rs      # human summary to stderr, JSON report to --report/--json files
 └── tests/
@@ -170,7 +173,7 @@ crates/veilcode-gui/src/
 ├── idle.rs        # idle timer (10 min) → lock(), driven by veilcode_core::Clock (the trait moved to core)
 ├── worker.rs      # one background thread + std::sync::mpsc: Argon2 and file I/O never block the UI
 ├── app.rs         # impl eframe::App: route to views, feed input events to idle timer, poll worker
-└── views/         # unlock.rs, scan.rs, mask.rs, restore.rs, sessions.rs, text_mode.rs
+└── views/         # unlock.rs, scan.rs, review.rs (mandatory before mask, D80), mask.rs, restore.rs, sessions.rs, text_mode.rs
                    # pickers via egui-file-dialog; no hyperlinks; Text Mode warning on restored text
 crates/veilcode-gui/tests/features.rs   # g4_: cargo metadata feature audit
 ```

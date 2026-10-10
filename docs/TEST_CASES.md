@@ -414,6 +414,55 @@ Every command exits 0 except step 5. stdout and stderr of every invocation pass 
 
 ---
 
+### PF1 — extra keys are detected (D76, D77)
+Type: auto
+With `extra_keys = ["customapi-pass"]`, each of these gives exactly one finding whose span is exactly `<v>`, `rule_id` is `custom-key` (D5) or D2/D3 as applicable, and `key_name` is the original spelling:
+- `.env`: `CUSTOMAPI_PASS=<v>`
+- `config.yml`: `customapi-pass: <v>`
+- `settings.json`: `"customapi_pass": "<v>"`
+- `app.ini`: `CustomApi.Pass = <v>`
+- `wp-config.php`: `define('CUSTOMAPI_PASS','<v>');`
+
+Without the profile, the yml, json and ini lines give no finding.
+### PF2 — D5 boundaries (D77)
+Type: auto
+- `my_customapi_pass_x: <v>` gives no finding (no boundary).
+- `customapi-pass: ${ENV}` and `customapi-pass: $(cmd)` give none.
+- `customapi-pass:` with an empty value gives none.
+- `customapi-pass: <v>, other` and `customapi-pass: <v>;` give spans of exactly `<v>`.
+- `customapi-pass = "<v> with space"` gives the full quoted content.
+- A byte `0xE9` inside the value is included (D41).
+### PF3 — ignored keys are reported, not auto-masked (D78)
+Type: auto
+With `ignored_keys = ["DB_NAME"]`, a `.env` with `DB_NAME=<a>` and `DB_PASSWORD=<b>` gives 2 findings. The DB_NAME one has `ignored == Some(ProfileKey)`. Pass when:
+- the default selection masks only `<b>`;
+- the output still contains `<a>`;
+- MaskReport `ignored_by_profile == 1`;
+- explicitly selecting the ignored id masks `<a>` too (override).
+### PF4 — per-file ignore entries (D74, D78)
+Type: auto
+`[[ignored]] {rel_path = "a/.env", key_name = "API_KEY"}` ignores API_KEY only in `a/.env`; the same key in `b/.env` is still selected. An entry with `rule_id` (a D1 rule) ignores that rule only in that file.
+### PF5 — profile edits round trip and hold no secrets (D79, D80)
+Type: auto
+- `add_extra_key`, `ignore_key`, `ignore_finding(ThisFile)` and `ignore_finding(Everywhere)`, then `save`, `load` and re-scan reflect each change; their `remove`/`unignore` counterparts restore the original scan result.
+- Adding a key that is already present, or removing one that is absent, is a no-op reported as such.
+- After ignoring findings, `assert_no_secret` passes on the saved profile bytes.
+### PF6 — profile safety (D75, D79)
+Type: auto
+- Each of these is a clear error (no panic, nothing ignored): a profile over 1 MiB, a symlinked profile (Unix), an unknown TOML field, `version = 2`, a key name of 65 chars or with `/`, an `[[ignored]]` entry with both or neither of key_name/rule_id, and a `rel_path` of `../x`.
+- A missing default profile acts as an empty profile.
+- A `profile.toml` or `.veilcode.toml` placed in the input folder root has no effect on the scan.
+### PF7 — CLI profile commands end-to-end (D80)
+Type: auto
+Through the binary with `--profile <tmp>`:
+- `profile add-key customapi-pass`, then `scan` finds the D5 secret.
+- `profile ignore-key DB_NAME`, then `scan` shows it as ignored and `mask` prints "1 findings ignored by profile (not masked)".
+- `profile ignore --path a/.env --key API_KEY` and `unignore --path a/.env --key API_KEY` work, and `profile list` shows the state.
+- `remove-key` and `unignore-key` restore the original state.
+- A bad key name exits 2.
+
+Every stdout and stderr passes `assert_no_secret`.
+
 ## P5 — CLI release
 ### REL1 — release artifacts
 Type: manual
@@ -444,6 +493,25 @@ A test parses `cargo metadata --format-version 1` (via `std::process::Command` i
 ### G5 — manual QA
 Type: manual
 Checklist in the PR: each screen, light and dark, on Windows 11 (local and over RDP) and on Ubuntu (X11 and Wayland). Keyboard-only navigation works. **Sessions screen (D63):** age and expiry columns are shown; "Purge all" asks for confirmation, and cancelling changes nothing. The restore screen has a "keep session" checkbox (default off) and shows "session forgotten" or the kept reason. The mask screen has "separate vault for this project" (D64) and a TTL selector (1–365, default 30).
+### G7 — review dialog state (D80)
+Type: auto
+App-state tests, with no window:
+- After scan, the review model lists every finding with key or rule, file, line and preview only (`assert_no_secret` on Debug); ignored findings sit in the ignored section, unticked.
+- Unticking removes the id from the selection.
+- "Remember: this file" and "Remember: everywhere" call the Profile API with the right scope. "Everywhere" requires the confirm flag.
+- "Unignore" re-ticks the finding.
+- "Add key name" adds to `extra_keys` and triggers a re-scan.
+- Mask is impossible from the state machine until the review step has been confirmed, and the confirm label equals "Mask N secrets" with N the selected count.
+### G8 — manual review dialog QA (D80)
+Type: manual
+In the PR, check:
+- grouping by key and rule;
+- untick plus remember (this file, and everywhere with confirmation);
+- unignore from the collapsed ignored section;
+- adding `customapi-pass` and seeing it detected after the re-scan;
+- that the counts match the MaskReport.
+
+Do this on Windows and Linux.
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

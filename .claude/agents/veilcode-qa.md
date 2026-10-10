@@ -29,6 +29,11 @@ You are a QA lead with 10+ years of testing systems software and security tools.
    - Is `vault.vc.tmp` gone afterwards?
 
    Also check the boundaries: `ttl_days` 0, 1, 365 and 366, and an open exactly at `expires_at`. Confirm that `expires_at <= now` is treated as expired.
+7. **Profile claims (D74–D80):**
+   - After `ignore`/`unignore` and `add-key`/`remove-key`, re-scan and check that the result really matches.
+   - Open the saved profile file and confirm it holds no secret bytes.
+   - Try key-name spellings (`customapi-pass`, `CustomApi.Pass`, `CUSTOMAPI_PASS`) and boundary cases (`xcustomapi_pass`).
+   - Confirm that a profile file placed inside the input folder has no effect.
 
 ## Report format
 - **Verdict:** PASS or FAIL for the phase.
