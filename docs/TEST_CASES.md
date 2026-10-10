@@ -118,6 +118,16 @@ For token `t`, the strings `"x" + t + "yz"`, `"_" + t + "_"`, `t + "9abcdef0"` a
 Type: auto
 Using an injected RNG whose first token already appears in a given input byte slice, the generator returns the second candidate.
 
+### T8 — empty secret rejected
+Type: auto
+`get_or_create_token` with an empty value returns an error and adds no entry (D30).
+### V12 — malformed files never panic
+Type: auto
+A 0-byte file, the 8-byte magic alone, the header alone, and header + 15 bytes each give the generic error, with no panic. A directory given as the vault path gives an `Io` error (D30).
+### V13 — save lock and file mode
+Type: auto
+If `vault.vc.tmp` already exists, save fails with the D28 error and leaves both files untouched. On Unix (`#[cfg(unix)]`) the saved `vault.vc` has mode `0600`.
+
 ---
 
 ## P2 — Scanner
@@ -255,6 +265,9 @@ MaskReport and RestoreReport JSON pass `assert_no_secret`.
 ### R8 — tokens are not re-detected
 Type: auto
 When restoring a masked `.env` file or URL (`postgres://u:VEILCODE_…@h`), `report.new_secrets` is empty.
+### R9 — token after a `VEILCODE_` prefix (D29)
+Type: auto
+The text `VEILCODE_` + token (and `VEILCODE_X_` + token) restores the token to its secret, leaving the prefix bytes untouched.
 ### X1 — text mode round trip
 Type: auto
 `restore_text(mask_text(s).0) == s` for a string holding a PAT, a URL password and an env line.

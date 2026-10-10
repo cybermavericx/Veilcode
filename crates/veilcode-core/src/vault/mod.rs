@@ -1,0 +1,602 @@
+//! The encrypted vault file (SPEC §7).
+
+mod crypto;
+mod format;
+mod model;
+
+pub use model::{Session, SessionId};
+
+use crate::error::{CoreError, Result};
+use crate::hex;
+use crate::rng::{OsRandom, RandomSource};
+use crate::secret::{SecretBytes, SecretString};
+use crate::token::{Token, TokenGen};
+use crypto::Key;
+pub(crate) use format::KdfParams;
+use format::{HEADER_LEN, Header, NONCE_LEN, SALT_LEN};
+use model::{Entry, VaultData};
+use sha2::{Digest, Sha256};
+use std::fmt;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Minimum passphrase length in Unicode scalar values (D8).
+const MIN_PASSPHRASE_CHARS: usize = 12;
+
+/// An open, decrypted vault. Values never appear in `Debug`.
+pub struct Vault {
+    path: PathBuf,
+    params: KdfParams,
+    salt: [u8; SALT_LEN],
+    key: Key,
+    data: VaultData,
+    /// sha256 of the file as last read or written; `None` if not yet saved (D7).
+    file_hash: Option<[u8; 32]>,
+}
+
+impl fmt::Debug for Vault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Vault")
+            .field("path", &self.path)
+            .field("sessions", &self.data.sessions.len())
+            .field("entries", &self.data.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Vault {
+    /// A new, empty vault at `path` (written on the first `save`).
+    pub fn create(path: &Path, pass: &SecretString) -> Result<Vault> {
+        Vault::create_with_params(path, pass, KdfParams::PRODUCTION)
+    }
+
+    /// `create` with explicit KDF params (tests use low params).
+    pub(crate) fn create_with_params(
+        path: &Path,
+        pass: &SecretString,
+        params: KdfParams,
+    ) -> Result<Vault> {
+        if pass.expose().chars().count() < MIN_PASSPHRASE_CHARS {
+            return Err(CoreError::PassphraseTooShort);
+        }
+        let mut salt = [0u8; SALT_LEN];
+        OsRandom.fill(&mut salt)?;
+        let key = crypto::derive_key(&params, pass, &salt)?;
+        Ok(Vault {
+            path: path.to_path_buf(),
+            params,
+            salt,
+            key,
+            data: VaultData::default(),
+            file_hash: None,
+        })
+    }
+
+    /// Opens and decrypts the vault at `path`.
+    pub fn open(path: &Path, pass: &SecretString) -> Result<Vault> {
+        let file = std::fs::read(path).map_err(|e| CoreError::io(path, &e))?;
+        let (header, ciphertext) = Header::parse(&file)?;
+        let key = crypto::derive_key(&header.params, pass, &header.salt)?;
+        let aad = &file[..HEADER_LEN];
+        let plain = crypto::open(&key, &header.nonce, aad, ciphertext)?;
+        let data = VaultData::from_json(&plain)?;
+        Ok(Vault {
+            path: path.to_path_buf(),
+            params: header.params,
+            salt: header.salt,
+            key,
+            data,
+            file_hash: Some(sha256(&file)),
+        })
+    }
+
+    /// Encrypts with a fresh nonce and atomically replaces the file.
+    /// Creating `vault.vc.tmp` exclusively is the writer lock (D28).
+    pub fn save(&mut self) -> Result<()> {
+        let tmp = self.tmp_path();
+        let lock = create_tmp(&tmp)?;
+        let result = self.save_locked(lock, &tmp);
+        if result.is_err() {
+            // We created the tmp file, so it is ours to remove (ciphertext at most).
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    }
+
+    /// D7 check, write, fsync, rename and directory fsync, under the lock.
+    fn save_locked(&mut self, mut tmp_file: File, tmp: &Path) -> Result<()> {
+        self.check_unchanged()?;
+        let file = self.encrypt()?;
+        tmp_file
+            .write_all(&file)
+            .and_then(|()| tmp_file.sync_all())
+            .map_err(|e| CoreError::io(tmp, &e))?;
+        drop(tmp_file);
+        std::fs::rename(tmp, &self.path).map_err(|e| CoreError::io(&self.path, &e))?;
+        self.file_hash = Some(sha256(&file));
+        sync_parent_dir(&self.path)
+    }
+
+    fn tmp_path(&self) -> PathBuf {
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        PathBuf::from(tmp)
+    }
+
+    /// Header (fresh nonce) followed by the sealed JSON.
+    fn encrypt(&self) -> Result<Vec<u8>> {
+        let mut nonce = [0u8; NONCE_LEN];
+        OsRandom.fill(&mut nonce)?;
+        let header = Header {
+            params: self.params,
+            salt: self.salt,
+            nonce,
+        }
+        .to_bytes();
+        let plain = self.data.to_json()?;
+        let ciphertext = crypto::seal(&self.key, &nonce, &header, &plain)?;
+        Ok([header.as_slice(), &ciphertext].concat())
+    }
+
+    /// D7: refuse to save if the file on disk is not the one we last saw.
+    fn check_unchanged(&self) -> Result<()> {
+        let on_disk = match std::fs::read(&self.path) {
+            Ok(bytes) => Some(sha256(&bytes)),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) => return Err(CoreError::io(&self.path, &e)),
+        };
+        if on_disk == self.file_hash {
+            Ok(())
+        } else {
+            Err(CoreError::VaultChanged)
+        }
+    }
+
+    /// The token for `value`, creating an entry if the value is new.
+    /// NAME comes from `name`, or from `rule_id` when `name` is empty (SPEC §4).
+    pub fn get_or_create_token(
+        &mut self,
+        value: &SecretBytes,
+        name: &str,
+        rule_id: &str,
+        input_haystacks: &[&[u8]],
+    ) -> Result<Token> {
+        if value.is_empty() {
+            return Err(CoreError::EmptyValue);
+        }
+        let found = self.data.entries.iter().find(|(_, e)| e.value == *value);
+        if let Some((token, _)) = found {
+            return Ok(token.clone());
+        }
+        let base = if name.is_empty() { rule_id } else { name };
+        let entries = &self.data.entries;
+        let token =
+            TokenGen::new(OsRandom).generate(base, |t| entries.contains_key(t), input_haystacks)?;
+        let entry = Entry {
+            value: value.clone(),
+            name: name.to_string(),
+            rule_id: rule_id.to_string(),
+        };
+        self.data.entries.insert(token.clone(), entry);
+        Ok(token)
+    }
+
+    /// The secret for `token`. Crate-internal: only restore reads values.
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by restore from P3"))]
+    pub(crate) fn value(&self, token: &Token) -> Option<&SecretBytes> {
+        self.data.entries.get(token).map(|e| &e.value)
+    }
+
+    /// Records a new session (D24 id, unix-seconds `created`) and returns its id.
+    pub fn add_session(&mut self, source_label: &str, tokens: Vec<Token>) -> Result<SessionId> {
+        let mut raw = [0u8; 8];
+        OsRandom.fill(&mut raw)?;
+        let id = SessionId(hex::encode(&raw));
+        let created = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.data.sessions.push(Session {
+            id: id.clone(),
+            created,
+            source_label: source_label.to_string(),
+            tokens,
+        });
+        Ok(id)
+    }
+
+    /// All sessions, oldest first.
+    pub fn sessions(&self) -> &[Session] {
+        &self.data.sessions
+    }
+}
+
+/// Creates the tmp file exclusively (never follows or overwrites one), 0600 on Unix.
+fn create_tmp(tmp: &Path) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(tmp).map_err(|e| match e.kind() {
+        ErrorKind::AlreadyExists => CoreError::SaveLocked,
+        _ => CoreError::io(tmp, &e),
+    })
+}
+
+/// Makes the rename durable: fsync the parent directory (Unix only).
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    File::open(parent)
+        .and_then(|d| d.sync_all())
+        .map_err(|e| CoreError::io(parent, &e))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format::{HEADER_LEN, M_AT, NONCE_AT, P_AT, T_AT, le_u32};
+    use super::*;
+    use crate::test_support::*;
+    use std::time::{Duration, Instant};
+
+    const GENERIC: &str = "wrong passphrase or corrupted vault";
+
+    fn secret(s: &str) -> SecretBytes {
+        SecretBytes::new(s.as_bytes().to_vec())
+    }
+
+    fn saved_small_vault(dir: &Path) -> (PathBuf, String) {
+        let mut v = test_vault(dir);
+        let value = fake_password();
+        v.get_or_create_token(&secret(&value), "k", "rule", &[])
+            .expect("token");
+        v.save().expect("save");
+        (dir.join("vault.vc"), value)
+    }
+
+    #[test]
+    fn v1_create_save_open_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let values = [
+            secret(&fake_github_pat()),
+            secret(&fake_password()),
+            SecretBytes::new([b"p\xc3\xa4ss-".as_slice(), random_alnum(12).as_bytes()].concat()),
+        ];
+        let mut toks = Vec::new();
+        for (i, val) in values.iter().enumerate() {
+            let t = v.get_or_create_token(val, &format!("key{i}"), "rule", &[]);
+            toks.push(t.expect("token"));
+        }
+        v.add_session("first", toks[..2].to_vec()).expect("session");
+        v.add_session("second", toks[2..].to_vec())
+            .expect("session");
+        v.save().expect("save");
+        let r = Vault::open(&dir.path().join("vault.vc"), &test_pass()).expect("open");
+        assert_eq!(r.data.entries.len(), 3);
+        assert_eq!(r.sessions().len(), 2);
+        assert!(r.data.entries == v.data.entries);
+        assert_eq!(r.sessions(), v.sessions());
+        assert_eq!(r.sessions()[1].source_label, "second");
+        assert_eq!(r.sessions()[0].id.as_str().len(), 16);
+    }
+
+    #[test]
+    fn v2_wrong_passphrase_is_generic_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, value) = saved_small_vault(dir.path());
+        let wrong = fake_password();
+        let err = Vault::open(&path, &SecretString::new(wrong.clone())).expect_err("must fail");
+        assert_eq!(err.to_string(), GENERIC);
+        assert!(matches!(err, CoreError::VaultOpen));
+        let out = format!("{err} {err:?}");
+        assert_no_secret(out.as_bytes(), &[value, wrong]);
+    }
+
+    #[test]
+    fn v3_single_bit_flip_at_every_offset_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, value) = saved_small_vault(dir.path());
+        let good = std::fs::read(&path).expect("read");
+        assert!(good.len() > HEADER_LEN + 16);
+        for at in 0..good.len() {
+            for bit in 0..8 {
+                let mut bad = good.clone();
+                bad[at] ^= 1 << bit;
+                std::fs::write(&path, &bad).expect("write");
+                let err = Vault::open(&path, &test_pass()).expect_err("tamper must fail");
+                assert_eq!(err.to_string(), GENERIC, "offset {at} bit {bit}");
+                assert_no_secret(format!("{err:?}").as_bytes(), &[&value]);
+            }
+        }
+        std::fs::write(&path, &good).expect("write");
+        assert!(Vault::open(&path, &test_pass()).is_ok());
+    }
+
+    #[test]
+    fn v4_fresh_nonce_per_save() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let first = std::fs::read(&path).expect("read");
+        let mut v = Vault::open(&path, &test_pass()).expect("open");
+        v.save().expect("save");
+        let second = std::fs::read(&path).expect("read");
+        assert_eq!(first.len(), second.len());
+        assert_eq!(first[..NONCE_AT], second[..NONCE_AT]);
+        assert_ne!(first[NONCE_AT..HEADER_LEN], second[NONCE_AT..HEADER_LEN]);
+        assert_ne!(first[HEADER_LEN..], second[HEADER_LEN..]);
+    }
+
+    #[test]
+    fn v5_atomic_save_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        assert!(!dir.path().join("vault.vc.tmp").exists());
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(&bytes[..8], b"VEILCODE");
+    }
+
+    #[test]
+    fn v6_kdf_params_come_from_the_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(bytes[8], 1);
+        assert_eq!(le_u32(&bytes, M_AT), 8);
+        assert_eq!(le_u32(&bytes, T_AT), 1);
+        assert_eq!(le_u32(&bytes, P_AT), 1);
+        let v = Vault::open(&path, &test_pass()).expect("open");
+        assert_eq!(
+            v.params,
+            KdfParams {
+                m_cost: 8,
+                t_cost: 1,
+                p_cost: 1
+            }
+        );
+        assert_eq!(v.data.entries.len(), 1);
+    }
+
+    #[test]
+    fn v7_minimum_passphrase_length() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("vault.vc");
+        let short = [random_alnum(11), "é".repeat(11)];
+        for s in short {
+            let err = Vault::create(&path, &SecretString::new(s.clone())).expect_err("too short");
+            assert!(matches!(err, CoreError::PassphraseTooShort));
+            assert_no_secret(format!("{err} {err:?}").as_bytes(), &[&s]);
+        }
+        assert_eq!("é".repeat(11).len(), 22);
+        assert!(Vault::create(&path, &SecretString::new(random_alnum(12))).is_ok());
+        let v = Vault::create(&path, &SecretString::new("é".repeat(12))).expect("12 chars");
+        assert_eq!(v.params, KdfParams::PRODUCTION);
+    }
+
+    #[test]
+    fn v8_debug_never_prints_secrets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pass = fake_password();
+        let path = dir.path().join("vault.vc");
+        let low = KdfParams {
+            m_cost: 8,
+            t_cost: 1,
+            p_cost: 1,
+        };
+        let mut v = Vault::create_with_params(&path, &SecretString::new(pass.clone()), low)
+            .expect("create");
+        let value = fake_github_pat();
+        let t = v.get_or_create_token(&secret(&value), "token", "github-pat", &[]);
+        let t = t.expect("token");
+        let entry = v.data.entries.get(&t).expect("entry");
+        let out = format!("{v:?} {entry:?} {:?}", v.value(&t));
+        assert!(out.contains("SecretBytes(<redacted>, len=40)"), "{out}");
+        assert_no_secret(out.as_bytes(), &[&value, &pass]);
+    }
+
+    fn patch_u32(path: &Path, at: usize, val: u32) {
+        let mut bytes = std::fs::read(path).expect("read");
+        bytes[at..at + 4].copy_from_slice(&val.to_le_bytes());
+        std::fs::write(path, bytes).expect("write");
+    }
+
+    #[test]
+    fn v9_absurd_header_params_rejected_before_kdf() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, value) = saved_small_vault(dir.path());
+        let good = std::fs::read(&path).expect("read");
+        for (at, val) in [(M_AT, u32::MAX), (T_AT, 0), (P_AT, 5)] {
+            std::fs::write(&path, &good).expect("write");
+            patch_u32(&path, at, val);
+            let before = crypto::kdf_calls();
+            let start = Instant::now();
+            let err = Vault::open(&path, &test_pass()).expect_err("must fail");
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert_eq!(crypto::kdf_calls(), before, "KDF ran for offset {at}");
+            assert_eq!(err.to_string(), GENERIC);
+            assert_no_secret(format!("{err:?}").as_bytes(), &[&value]);
+        }
+        std::fs::write(&path, &good).expect("write");
+        let before = crypto::kdf_calls();
+        Vault::open(&path, &test_pass()).expect("open");
+        assert_eq!(crypto::kdf_calls(), before + 1);
+    }
+
+    #[test]
+    fn v10_non_utf8_value_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let raw = SecretBytes::new(vec![0xff, 0xfe, b'a']);
+        let t = v
+            .get_or_create_token(&raw, "bin", "rule", &[])
+            .expect("token");
+        v.save().expect("save");
+        let r = Vault::open(&dir.path().join("vault.vc"), &test_pass()).expect("open");
+        let got = r.value(&t).expect("value");
+        assert_eq!(got.expose(), &[0xff, 0xfe, b'a']);
+    }
+
+    #[test]
+    fn v11_concurrent_writer_detection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let mut a = Vault::open(&path, &test_pass()).expect("open a");
+        let mut b = Vault::open(&path, &test_pass()).expect("open b");
+        b.add_session("from b", Vec::new()).expect("session");
+        b.save().expect("save b");
+        let after_b = std::fs::read(&path).expect("read");
+        a.add_session("from a", Vec::new()).expect("session");
+        let err = a.save().expect_err("a must be refused");
+        assert!(matches!(err, CoreError::VaultChanged));
+        assert_eq!(
+            err.to_string(),
+            "vault changed by another Veilcode process — reopen"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), after_b);
+        let r = Vault::open(&path, &test_pass()).expect("open");
+        assert_eq!(r.sessions()[0].source_label, "from b");
+    }
+
+    #[test]
+    fn new_vault_save_refuses_to_overwrite_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let before = std::fs::read(&path).expect("read");
+        let mut fresh = test_vault(dir.path());
+        assert!(matches!(fresh.save(), Err(CoreError::VaultChanged)));
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+    }
+
+    #[test]
+    fn t2_ten_thousand_tokens_are_distinct() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..10_000u32 {
+            let val = SecretBytes::new(i.to_le_bytes().to_vec());
+            seen.insert(
+                v.get_or_create_token(&val, "k", "rule", &[])
+                    .expect("token"),
+            );
+        }
+        assert_eq!(seen.len(), 10_000);
+        assert_eq!(v.data.entries.len(), 10_000);
+    }
+
+    #[test]
+    fn t3_dedupe_returns_same_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let val = secret(&fake_password());
+        let a = v
+            .get_or_create_token(&val, "first", "r1", &[])
+            .expect("token");
+        let b = v
+            .get_or_create_token(&val, "second", "r2", &[])
+            .expect("token");
+        assert_eq!(a, b);
+        assert_eq!(v.data.entries.len(), 1);
+        assert!(a.as_str().starts_with("VEILCODE_FIRST_"));
+    }
+
+    #[test]
+    fn empty_name_uses_rule_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let t = v.get_or_create_token(&secret(&fake_password()), "", "github-pat", &[]);
+        assert!(
+            t.expect("token")
+                .as_str()
+                .starts_with("VEILCODE_GITHUB_PAT_")
+        );
+    }
+
+    #[test]
+    fn t8_empty_secret_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let err = v
+            .get_or_create_token(&SecretBytes::new(Vec::new()), "k", "rule", &[])
+            .expect_err("empty value");
+        assert!(matches!(err, CoreError::EmptyValue));
+        assert_eq!(err.to_string(), "secret value is empty");
+        assert!(v.data.entries.is_empty());
+    }
+
+    #[test]
+    fn v12_malformed_files_never_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let good = std::fs::read(&path).expect("read");
+        let shapes: [&[u8]; 4] = [
+            &[],
+            &good[..8],
+            &good[..HEADER_LEN],
+            &good[..HEADER_LEN + 15],
+        ];
+        for shape in shapes {
+            std::fs::write(&path, shape).expect("write");
+            let err = Vault::open(&path, &test_pass()).expect_err("malformed");
+            assert_eq!(err.to_string(), GENERIC, "len {}", shape.len());
+        }
+        let err = Vault::open(dir.path(), &test_pass()).expect_err("directory");
+        match err {
+            CoreError::Io { path, .. } => assert_eq!(path, dir.path()),
+            other => panic!("expected Io, got {other}"),
+        }
+    }
+
+    #[test]
+    fn v13_save_lock_and_file_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let tmp = dir.path().join("vault.vc.tmp");
+        let vault_before = std::fs::read(&path).expect("read");
+        std::fs::write(&tmp, b"stale").expect("write tmp");
+        let mut v = Vault::open(&path, &test_pass()).expect("open");
+        let err = v.save().expect_err("locked");
+        assert!(matches!(err, CoreError::SaveLocked));
+        assert_eq!(
+            err.to_string(),
+            "vault is being saved by another Veilcode process, or a previous save crashed \
+             — delete vault.vc.tmp if no Veilcode is running"
+        );
+        assert_eq!(std::fs::read(&path).expect("read"), vault_before);
+        assert_eq!(std::fs::read(&tmp).expect("read tmp"), b"stale");
+        std::fs::remove_file(&tmp).expect("remove tmp");
+        v.save().expect("save after unlock");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn failed_save_releases_the_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, _) = saved_small_vault(dir.path());
+        let mut a = Vault::open(&path, &test_pass()).expect("open a");
+        let mut b = Vault::open(&path, &test_pass()).expect("open b");
+        b.save().expect("save b");
+        assert!(matches!(a.save(), Err(CoreError::VaultChanged)));
+        assert!(!dir.path().join("vault.vc.tmp").exists());
+    }
+}

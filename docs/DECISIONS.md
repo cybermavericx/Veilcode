@@ -57,3 +57,14 @@ Static bans prove the HTTP/TLS/DNS crates are absent. The strace audit proves th
 - **P6 renderer:** `wgpu` vs `glow` (criteria above).
 - **P6 clipboard:** whether clipboard support is a separate eframe/egui-winit feature at the locked version.
 - **P7 packaging:** cargo-packager (one tool producing MSI/NSIS, `.deb` and AppImage) vs cargo-deb + cargo-wix. Prefer whichever needs **no network download at build time beyond pinned, checksummed tools**, and record it. Minimum deliverables: Windows `.msi` plus portable `.zip`; Linux `.deb` plus `.tar.gz` (AppImage optional).
+
+## Decided during P1 (2026-10-10; the maintainer delegated these choices to the orchestrator)
+| ID | Decision | Status |
+|---|---|---|
+| D24 | A session id is 16 lowercase hex characters (8 bytes from getrandom), and `created` is unix seconds from `SystemTime`. SPEC §6.4 did not define the id format. | ACCEPTED |
+| D25 | **Preview of short secrets.** "First 4 chars" would reveal the whole of a ≤4-character secret. Rule: if the value has fewer than 8 chars, the preview is `…(N)` with no characters shown; otherwise it is the first 4 chars + `…(N)`. N is the length in chars of the lossy-UTF-8 value. This applies everywhere SPEC says "preview". | ACCEPTED |
+| D26 | Enable chacha20poly1305's optional `zeroize` feature (the cipher state is wiped on drop). zeroize is already allowed by SPEC §9. | ACCEPTED |
+| D27 | **Argon2 memory hygiene.** Enable argon2's `zeroize` feature. Derive the key with caller-allocated blocks (`hash_password_into_with_memory`, or whatever the 0.6.0 equivalent is, verified in VERIFY_LOG) and zeroize those blocks after use, so the 64 MiB of KDF state is not freed unwiped. | ACCEPTED |
+| D28 | **Save lock and permissions.** `vault.vc.tmp` is created with `create_new(true)` (never follows or overwrites an existing file) and mode `0600` on Unix. If the tmp file already exists, save fails with "vault is being saved by another Veilcode process, or a previous save crashed — delete vault.vc.tmp if no Veilcode is running". The create_new acts as the writer lock and closes the D7 race between check and rename. After the rename, fsync the parent directory on Unix. | ACCEPTED |
+| D29 | **Tokens preceded by `VEILCODE_`** (for P3 restore). The leftmost regex match can swallow a token that follows text ending in `VEILCODE_[A-Z0-9_]*`. Restore must therefore try a match at every `VEILCODE_` start offset, and a candidate counts only if it is a vault key. SPEC §4's "whatever bytes sit next to it" holds only for the right side; the left side is handled by this rule. Covered by R9. | ACCEPTED |
+| D30 | Empty secret values are rejected by `get_or_create_token` (error, no value in the message). A vault path that is a directory or unreadable gives an `Io` error, not the generic one, because this is not a crypto oracle. | ACCEPTED |
