@@ -80,6 +80,47 @@ pub enum CoreError {
     /// Text Mode output would not be valid UTF-8.
     #[error("text result is not valid UTF-8")]
     TextNotUtf8,
+    /// The profile is not a regular file of at most 1 MiB (D79).
+    #[error("unsafe profile (must be a regular file ≤ 1 MiB)")]
+    UnsafeProfile,
+    /// The profile is not strict TOML with known fields (D79). Only the
+    /// line is reported, never the parser text, which can quote the file.
+    #[error("profile is not valid TOML or has an unknown or mistyped field (line {line})")]
+    ProfileParse { line: usize },
+    /// The profile `version` is not 1 (D74).
+    #[error("unsupported profile version {version} (expected 1)")]
+    ProfileVersion { version: u32 },
+    /// A key name or rule id is not 1–64 of `A-Z a-z 0-9 _ . -` or space (D79).
+    #[error(
+        "key names and rule ids must be 1–64 characters of A–Z, a–z, 0–9, _, ., - or space, \
+         with at least one letter or digit"
+    )]
+    BadKeyName,
+    /// An `[[ignored]]` entry needs exactly one of key_name or rule_id (D74).
+    #[error("each [[ignored]] entry needs exactly one of key_name or rule_id")]
+    BadIgnoreEntry,
+    /// A finding without a key name can only be ignored in its own file.
+    #[error("this finding has no key name; it can only be ignored in its file")]
+    NoKeyName,
+    /// A profile list is over its D88 cap.
+    #[error("profile has too many {what} (at most {max})")]
+    ProfileTooLarge { what: &'static str, max: usize },
+    /// The profile extra_keys could not be compiled into the D5 detector (D88).
+    #[error("profile extra_keys could not be compiled into the custom-key detector")]
+    ProfileRegex,
+    /// `profile.toml.tmp` already exists: a save is running or one crashed.
+    #[error(
+        "profile is being saved by another Veilcode process, or a previous save crashed \
+         — delete {} if no Veilcode is running", path.display()
+    )]
+    ProfileSaveLocked { path: PathBuf },
+    /// A findings file is not a valid scan report. Only the position is
+    /// reported, never the parser text, which can quote the file.
+    #[error("findings file is not a valid scan report (line {line}, column {column})")]
+    FindingsFile { line: usize, column: usize },
+    /// A report could not be encoded as JSON.
+    #[error("report could not be encoded as JSON")]
+    ReportEncode,
 }
 
 impl CoreError {

@@ -349,7 +349,8 @@ Pass when:
 - `expired_removed == 1`;
 - X and its unique entries are gone, and Y is kept;
 - the file on disk was rewritten: the file sha256 changed, and a fresh open sees X absent;
-- opening at T + 10 s removes nothing.
+- opening at T + 10 s removes nothing;
+- opening at exactly X's `expires_at` removes X, while a session whose `expires_at` is 1 s later stays (D61: `expires_at <= now` is expired). Changing `<=` to `<` must make this test fail.
 
 Also check that `ttl_days` values 0 and 366 are rejected, and that a tampered `expires_at` beyond `created + 365 days` gives the generic error (build it with the test-only constructor + re-seal).
 ### LF5 — last session removal deletes the file (D62)
@@ -426,7 +427,7 @@ With `extra_keys = ["customapi-pass"]`, each of these gives exactly one finding 
 Without the profile, the yml, json and ini lines give no finding.
 ### PF2 — D5 boundaries (D77)
 Type: auto
-- `my_customapi_pass_x: <v>` gives no finding (no boundary).
+- `my_customapi_pass_x: <v>`, `xcustomapi_pass: <v>` and `customapi_pass_x: <v>` give no finding (no boundary before or after the key), while `my.customapi-pass: <v>` and `(customapi-pass: <v>` give one finding each (`.` and `(` are boundaries). Removing either boundary check must make this test fail.
 - `customapi-pass: ${ENV}` and `customapi-pass: $(cmd)` give none.
 - `customapi-pass:` with an empty value gives none.
 - `customapi-pass: <v>, other` and `customapi-pass: <v>;` give spans of exactly `<v>`.
@@ -434,11 +435,14 @@ Type: auto
 - A byte `0xE9` inside the value is included (D41).
 ### PF3 — ignored keys are reported, not auto-masked (D78)
 Type: auto
-With `ignored_keys = ["DB_NAME"]`, a `.env` with `DB_NAME=<a>` and `DB_PASSWORD=<b>` gives 2 findings. The DB_NAME one has `ignored == Some(ProfileKey)`. Pass when:
+With `extra_keys = ["DB_NAME"]` (so it is detected at all, D83) and `ignored_keys = ["DB_NAME"]`, a `.env` with `DB_NAME=<a>` and `DB_PASSWORD=<b>` gives 2 findings. The DB_NAME one has `ignored == Some(ProfileKey)`. Pass when:
 - the default selection masks only `<b>`;
 - the output still contains `<a>`;
 - MaskReport `ignored_by_profile == 1`;
 - explicitly selecting the ignored id masks `<a>` too (override).
+### PF3b — ignore still applies when a gitleaks rule also matches (D86)
+Type: auto
+With `extra_keys` and `ignored_keys` both `["customapi-pass"]`, scan `config.yml` containing `customapi-pass: <28 random alnum>`, a value that also matches `generic-api-key`. Pass when there is exactly one finding, its `key_name` is `customapi-pass`, `ignored == Some(ProfileKey)`, and the default mask leaves the value unmasked. Without `ignored_keys`, the same finding is masked and still shows the key name.
 ### PF4 — per-file ignore entries (D74, D78)
 Type: auto
 `[[ignored]] {rel_path = "a/.env", key_name = "API_KEY"}` ignores API_KEY only in `a/.env`; the same key in `b/.env` is still selected. An entry with `rule_id` (a D1 rule) ignores that rule only in that file.
@@ -452,11 +456,14 @@ Type: auto
 - Each of these is a clear error (no panic, nothing ignored): a profile over 1 MiB, a symlinked profile (Unix), an unknown TOML field, `version = 2`, a key name of 65 chars or with `/`, an `[[ignored]]` entry with both or neither of key_name/rule_id, and a `rel_path` of `../x`.
 - A missing default profile acts as an empty profile.
 - A `profile.toml` or `.veilcode.toml` placed in the input folder root has no effect on the scan.
+### PF8 — D5 stays linear on hostile lines (D87)
+Type: auto
+With `extra_keys = ["dbname"]`, scan one 5 MiB line of `dbname=` repeated and one of `dbname="dbname=` repeated, each in under 30 s in the debug test build. Assert the elapsed time; the finding count must be consistent and no larger than the number of non-overlapping values.
 ### PF7 — CLI profile commands end-to-end (D80)
 Type: auto
 Through the binary with `--profile <tmp>`:
 - `profile add-key customapi-pass`, then `scan` finds the D5 secret.
-- `profile ignore-key DB_NAME`, then `scan` shows it as ignored and `mask` prints "1 findings ignored by profile (not masked)".
+- `profile add-key DB_NAME` and `profile ignore-key DB_NAME` (D83), then `scan` shows it as ignored and `mask` prints "1 findings ignored by profile (not masked)".
 - `profile ignore --path a/.env --key API_KEY` and `unignore --path a/.env --key API_KEY` work, and `profile list` shows the state.
 - `remove-key` and `unignore-key` restore the original state.
 - A bad key name exits 2.

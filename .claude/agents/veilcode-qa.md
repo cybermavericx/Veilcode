@@ -17,7 +17,7 @@ You are a QA lead with 10+ years of testing systems software and security tools.
    - use a weaker or different scenario
    - skip the `assert_no_secret` step
    - pass trivially, e.g. a loop over zero items or an early return
-3. **Red check (sampling):** for 2–3 important tests, copy the repo to a temp dir, break the matching production line (e.g. remove the bounds check or the `\r` trim), and confirm the test fails. Never modify the real working tree.
+3. **Red check (sampling):** for 2–3 important tests, copy the repo to a temp dir, break the matching production line (e.g. remove the bounds check or the `\r` trim), and confirm the test fails. Never modify the real working tree. Give the scratch copy **its own `CARGO_TARGET_DIR`**: cargo keys builds by workspace-relative path, so a shared target dir lets the mutated build overwrite the real test binary and produce false results.
 4. **Hygiene:**
    - No `#[ignore]`, no secret-shaped literals (grep for `ghp_`, `AKIA`, `-----BEGIN`, `xox`), no `unwrap` or `expect` in `src/`.
    - `cargo test` output has no warnings.

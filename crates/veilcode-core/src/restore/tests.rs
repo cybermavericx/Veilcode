@@ -37,7 +37,15 @@ impl Run {
     }
 
     fn restore(&mut self) -> RestoreReport {
-        restore(&self.masked, &self.restored, &mut self.vault, None, false).expect("restore")
+        restore(
+            &self.masked,
+            &self.restored,
+            &mut self.vault,
+            None,
+            false,
+            &crate::Profile::default(),
+        )
+        .expect("restore")
     }
 
     fn tok(&self, secret: &str) -> String {
@@ -292,7 +300,15 @@ fn r11_restore_output_never_overwrites() {
     sample_tree(&r.input);
     r.mask();
     write_tree(&r.restored, &[(".env", b"old")]);
-    let err = restore(&r.masked, &r.restored, &mut r.vault, None, false).expect_err("non-empty");
+    let err = restore(
+        &r.masked,
+        &r.restored,
+        &mut r.vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    )
+    .expect_err("non-empty");
     assert!(
         matches!(err, crate::CoreError::OutputExists { .. }),
         "{err}"
@@ -307,7 +323,15 @@ fn restore_unknown_session_is_error() {
     sample_tree(&r.input);
     r.mask();
     let id = crate::vault::SessionId::try_from("0000000000000000".to_string()).expect("id");
-    let err = restore(&r.masked, &r.restored, &mut r.vault, Some(&id), false).expect_err("unknown");
+    let err = restore(
+        &r.masked,
+        &r.restored,
+        &mut r.vault,
+        Some(&id),
+        false,
+        &crate::Profile::default(),
+    )
+    .expect_err("unknown");
     assert!(
         matches!(err, crate::CoreError::UnknownSession { .. }),
         "{err}"
@@ -398,7 +422,15 @@ mod property {
 fn r12_restore_needs_a_session() {
     let mut r = setup();
     write_tree(&r.input, &[("a.txt", b"x\n")]);
-    let err = restore(&r.input, &r.restored, &mut r.vault, None, false).expect_err("no session");
+    let err = restore(
+        &r.input,
+        &r.restored,
+        &mut r.vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    )
+    .expect_err("no session");
     assert!(matches!(err, crate::CoreError::NoSession), "{err}");
     assert_eq!(err.to_string(), "vault has no sessions to restore");
     assert!(!r.restored.exists());
@@ -447,7 +479,14 @@ fn r13_failed_run_removes_partial_output() {
     assert_cleaned(&err.expect_err("mask must fail"), &again);
     assert_eq!(file_sha(&vault_file), sha);
     crate::paths::fail_file_writes_after(Some(2));
-    let err = restore(&r.masked, &r.restored, &mut r.vault, None, false);
+    let err = restore(
+        &r.masked,
+        &r.restored,
+        &mut r.vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    );
     crate::paths::fail_file_writes_after(None);
     let err = err.expect_err("restore must fail");
     assert_cleaned(&err, &r.restored);

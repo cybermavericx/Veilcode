@@ -26,6 +26,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+/// D81: the default vault, `vault.vc` in the local (non-roaming) data dir
+/// (`%LOCALAPPDATA%` on Windows). `None` if the OS reports no home directory.
+pub fn default_vault_path() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")?;
+    Some(dirs.data_local_dir().join("vault.vc"))
+}
+
 /// Minimum passphrase length in Unicode scalar values (D8).
 const MIN_PASSPHRASE_CHARS: usize = 12;
 

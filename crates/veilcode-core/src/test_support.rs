@@ -135,7 +135,12 @@ fn helpers_assert_no_secret_shows_preview_only() {
 
 /// Scans `dir` with default options.
 pub(crate) fn scan_dir(dir: &Path) -> crate::ScanReport {
-    crate::scan(dir, &crate::ScanOptions::default()).expect("scan")
+    crate::scan(
+        dir,
+        &crate::ScanOptions::default(),
+        &crate::Profile::default(),
+    )
+    .expect("scan")
 }
 
 /// Scans `input` and masks every finding into `out`.

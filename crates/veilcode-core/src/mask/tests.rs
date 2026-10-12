@@ -285,7 +285,15 @@ fn m9_non_utf8_secret_masked_and_restored() {
     );
     assert_eq!(&value_hex[4..8], "fffe");
     let restored = d.tmp.path().join("restored");
-    crate::restore(&d.out, &restored, &mut vault, None, false).expect("restore");
+    crate::restore(
+        &d.out,
+        &restored,
+        &mut vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    )
+    .expect("restore");
     assert!(read(&restored, ".env") == body, "restored bytes differ");
 }
 
@@ -333,11 +341,27 @@ fn m11_output_dir_must_be_new_and_private() {
     let mut vault = test_vault(d.tmp.path());
     let masked = d.tmp.path().join("masked");
     mask_all(&d.input, &masked, &mut vault);
-    let err = crate::restore(&masked, &d.out, &mut vault, None, false).expect_err("exists");
+    let err = crate::restore(
+        &masked,
+        &d.out,
+        &mut vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    )
+    .expect_err("exists");
     assert!(matches!(err, CoreError::OutputExists { .. }), "{err}");
     assert!(dir_is_empty(&d.out));
     let nested = d.tmp.path().join("a").join("b").join("restored");
-    crate::restore(&masked, &nested, &mut vault, None, false).expect("restore");
+    crate::restore(
+        &masked,
+        &nested,
+        &mut vault,
+        None,
+        false,
+        &crate::Profile::default(),
+    )
+    .expect("restore");
     assert!(read(&nested, ".env") == read(&d.input, ".env"));
     assert_no_secret(format!("{err:?}").as_bytes(), &s.all());
 }

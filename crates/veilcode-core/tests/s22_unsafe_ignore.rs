@@ -2,12 +2,12 @@
 //! An integration test, so the FIFO case may run `mkfifo` (no libc, SPEC §9).
 
 use std::path::Path;
-use veilcode_core::{CoreError, ScanOptions, scan};
+use veilcode_core::{CoreError, Profile, ScanOptions, scan};
 
 const D44: &str = "unsafe .veilcodeignore (must be a regular file ≤ 1 MiB)";
 
 fn assert_d44(dir: &Path) {
-    match scan(dir, &ScanOptions::default()) {
+    match scan(dir, &ScanOptions::default(), &Profile::default()) {
         Err(e @ CoreError::UnsafeIgnoreFile) => assert_eq!(e.to_string(), D44),
         Err(e) => panic!("wrong error: {e}"),
         Ok(_) => panic!("scan succeeded"),
@@ -22,7 +22,7 @@ fn s22_unsafe_veilcodeignore() {
     assert_d44(dir.path());
     // Exactly 1 MiB is allowed.
     std::fs::write(&ignore, vec![b'#'; 1024 * 1024]).expect("write");
-    let r = scan(dir.path(), &ScanOptions::default()).expect("scan");
+    let r = scan(dir.path(), &ScanOptions::default(), &Profile::default()).expect("scan");
     assert_eq!(r.scanned_files.len(), 1);
     #[cfg(unix)]
     unix_cases(dir.path(), &ignore);

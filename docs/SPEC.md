@@ -109,7 +109,7 @@ ignored_keys = ["DB_NAME"]                    # never auto-select these key name
 rel_path = "config/.env"
 key_name = "APP_KEY_ID"                       # or: rule_id = "generic-api-key"
 ```
-- **Location:** the `ProjectDirs` config dir `profile.toml` by default, or `--profile FILE` (a per-project profile is recommended, like per-project vaults). The profile is **never read from the input folder automatically** (D75).
+- **Location:** the `ProjectDirs` **local** config dir `profile.toml` by default (D81), or `--profile FILE` (a per-project profile is recommended, like per-project vaults). The profile is **never read from the input folder automatically** (D75).
 - **Matching:** key names are normalised (uppercased; `-`, `.` and space become `_`) and matched exactly (D76).
 - **Effect:**
   - Ignored findings are reported and excluded from the default selection. Selecting one explicitly still masks it.
@@ -164,7 +164,7 @@ Every write path must be checked: the joined output path must stay under the out
 - **Per-project vaults (D64):** `--vault <project>.vc` is the recommended pattern. The GUI offers "separate vault for this project".
 
 ## 7. Vault
-- Location: `directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")` data dir, file `vault.vc`. Overridable via `--vault` / config (used by tests).
+- Location: `directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")` **local (non-roaming) data dir** (D81; on Windows `%LOCALAPPDATA%`), file `vault.vc`. Overridable via `--vault` (per-project vaults recommended, D64).
 - Binary layout:
   ```
   magic "VEILCODE" (8) | format u8 = 1 | m_cost u32 LE | t_cost u32 LE | p_cost u32 LE |
