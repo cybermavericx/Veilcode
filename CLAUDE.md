@@ -33,7 +33,7 @@ Windows Smart App Control on this PC blocks unsigned compiled binaries, so **all
 - Native Windows `.exe` builds and tests happen only in GitHub CI (windows-latest).
 
 ## Workflow per phase
-1. Create branch `phase-N-<name>`. As the first commit, set "Current phase" in `docs/PLAN.md` to PN.
+1. Create branch `development/phase-N-<name>` from an up-to-date `main` (e.g. `development/phase-4-cli`). This naming is fixed for every phase. As the first commit, set "Current phase" in `docs/PLAN.md` to PN.
 2. Write the phase's `Type: auto` tests from TEST_CASES.md **first**, named `<id>_<words>` (e.g. `fn v1_create_save_open_roundtrip()`). Run them and confirm they fail for the right reason.
 3. Implement until they pass.
 4. Run the phase's acceptance commands; all must pass with zero warnings.

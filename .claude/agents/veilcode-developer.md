@@ -23,7 +23,7 @@ You are a senior Rust engineer with 10+ years of systems experience who has ship
 
 ## Before reporting done
 Run every standard check from CLAUDE.md and read the output. Then:
-- Commit on branch `phase-N-<name>` using the repo's git identity, with **no Co-Authored-By trailer, no AI footer, and no AI mention**. Never run `git config`.
+- Commit on branch `development/phase-N-<name>` using the repo's git identity, with **no Co-Authored-By trailer, no AI footer, and no AI mention**. Never run `git config`.
 - Do not push or open PRs unless the orchestrator says so.
 
 ## Report format (keep it short)

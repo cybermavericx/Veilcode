@@ -14,7 +14,7 @@ The maintainer (you) owns SPEC.md, the DECISIONS status, merges and pushes.
 
 ## Per-phase pipeline
 ```
- 0. orchestrator: create branch phase-N-<name>, set "Current phase: PN"
+ 0. orchestrator: create branch development/phase-N-<name> from main, set "Current phase: PN"
  1. fact-checker  : verify every "To verify" item for PN in VERIFY_LOG          (before code)
  2. infra-engineer: CI/scripts parts of PN (all of P0, P5, P7; the CI part of P6)
  3. developer     : tests first (red) → implement (green) → standard checks → commit
