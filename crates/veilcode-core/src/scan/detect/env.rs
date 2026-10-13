@@ -1,6 +1,6 @@
 //! D2: env files (SPEC §5, D9; D38/D39 PROPOSED).
 
-use super::{Candidate, ENV_RULE_ID, is_secret_key};
+use super::{Candidate, ENV_RULE_ID, ExtraKeys, is_secret_key};
 use crate::scan::finding::Detector;
 use regex::bytes::{Regex, RegexBuilder};
 use std::sync::LazyLock;
@@ -25,13 +25,13 @@ pub(crate) fn applies(file_name: &str) -> bool {
 }
 
 /// Adds one candidate per secret-named key with a usable value.
-pub(crate) fn detect(content: &[u8], out: &mut Vec<Candidate>) {
+pub(crate) fn detect(content: &[u8], extra: &ExtraKeys, out: &mut Vec<Candidate>) {
     let Some(re) = ENV_RE.as_ref() else { return };
     for caps in re.captures_iter(content) {
         let (Some(key), Some(value)) = (caps.get(2), caps.get(3)) else {
             continue;
         };
-        if !is_secret_key(key.as_bytes()) {
+        if !is_secret_key(key.as_bytes(), extra) {
             continue;
         }
         let (s, e) = value_span(value.as_bytes());

@@ -1,7 +1,7 @@
-# Veilcode — Specification (v1.2, frozen 2026-10-10)
+# Veilcode — Specification (v1.3, frozen 2026-10-10)
 
 Repo: https://github.com/cybermavericx/Veilcode · License: MIT OR Apache-2.0
-Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md.
+Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md. v1.3 (maintainer-requested) adds the detection profile, custom keys, false-positive handling and review-before-mask (§5.1; D74–D80), and brings the §5 text in line with D41 and D48–D50.
 
 ## 1. Problem & positioning
 Developers paste server code into AI assistants, including `.env` files and config secrets. Veilcode masks those secrets with unique placeholders, stores the real values in a local encrypted vault, and restores them after the AI work is done, even if the AI moved, renamed, or edited the code.
@@ -67,31 +67,59 @@ scripts/check-offline.sh, scripts/check-test-ids.sh, scripts/net-audit.sh
   - Value: if it starts with `"` or `'`, the secret is the bytes up to the matching closing quote. Otherwise cut at the first ` #` (space + hash), then trim trailing spaces and tabs.
   - Skip empty values and values starting with `${` or `$(`. `\r` is never part of a span.
 - **D3 PHP define.** Applies to `*.php`.
-  - Pattern: `define\(\s*['"]([A-Z0-9_]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)`
-  - Same key-name filter as D2. This covers `wp-config.php`. Values containing a quote character are not detected; the README lists this limitation.
+  - Pattern: `define\s*\(\s*['"]([A-Z0-9_]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)` (D49)
+  - Same key-name filter as D2, including profile `extra_keys` (§5.1). This covers `wp-config.php`. Values containing a quote character are not detected; the README lists this limitation.
 - **D4 URL credentials.** Applies to all text files.
-  - Pattern: `[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:([^\s@/]+)@`
+  - Pattern: `[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:([^\s/]+)@`. The password group is greedy up to the last `@` (D50).
   - The secret is group 1 (the password only).
+- **D5 custom-key assignment** (D77). Applies to all text files, and only for profile `extra_keys`.
+  - Matches: an optionally quoted key with word boundaries, then `:` or `=`, then a quoted value or an unquoted value.
+  - Byte mode. `rule_id = "custom-key"`.
+
+D2–D5 compile in byte mode with `unicode(false)` (D41).
 
 **Post-processing:**
 - A keyword pre-filter (case-insensitive) runs before each D1 regex.
-- Drop any finding whose secret span is, or contains, a match of the §4 token regex.
-- **Overlap resolution (deterministic):**
-  1. Sort candidates by (span length desc, detector D1<D2<D3<D4, rule index in gitleaks.toml asc, start asc).
-  2. Accept candidates greedily, skipping any that overlap an accepted one.
+- Drop a candidate only if its span is **exactly** a §4 token match (D48a).
+- **Overlap resolution (deterministic, D10 + D48b):**
+  1. Sort candidates by (span length desc, detector D1<D2<D3<D4<D5, rule index in gitleaks.toml asc, start asc).
+  2. Merge overlapping candidates into their union span, credited to the first candidate in that order.
   3. Output sorted by (rel_path, start).
+- **Profile marking (D78):** findings matched by `ignored_keys` or an `[[ignored]]` entry are kept, with `ignored` set.
 
 **Finding** (serialisable):
 ```
 id (hex sha256 of rel_path|start|end|rule_id, first 16 chars), rel_path, line, column,
-start, end (byte offsets), rule_id, detector (D1..D4), key_name (optional),
-preview ("abcd…(40)"), file_sha256
+start, end (byte offsets), rule_id, detector (D1..D5), key_name (optional),
+preview ("abcd…(40)"), file_sha256, ignored (optional: profile key | profile entry)
 ```
 - `line` and `column` are 1-based, and `column` counts bytes.
 - `rel_path` uses `/` separators on every OS and is built from path components.
 - A Finding **never** contains the secret value.
 
-**ScanReport:** findings; `scanned_files: [{rel_path, sha256}]` covering every text file; lists of skipped files (binary, oversized, symlink, excluded); rule-load warnings.
+**ScanReport:** findings; `scanned_files: [{rel_path, sha256}]` covering every text file; the `ScanOptions` used; lists of skipped files (binary, oversized, symlink, excluded, non-UTF-8 name, changed during scan); warnings.
+
+### 5.1 Detection profile (D74–D80)
+A user-editable TOML file that tunes detection. It **never contains secret values**:
+```toml
+version = 1
+extra_keys   = ["customapi-pass", "dbname"]   # also detect these key names (D2, D3, D5)
+ignored_keys = ["DB_NAME"]                    # never auto-select these key names
+[[ignored]]                                   # one specific false positive
+rel_path = "config/.env"
+key_name = "APP_KEY_ID"                       # or: rule_id = "generic-api-key"
+```
+- **Location:** the `ProjectDirs` **local** config dir `profile.toml` by default (D81), or `--profile FILE` (a per-project profile is recommended, like per-project vaults). The profile is **never read from the input folder automatically** (D75).
+- **Matching:** key names are normalised (uppercased; `-`, `.` and space become `_`) and matched exactly (D76).
+- **Effect:**
+  - Ignored findings are reported and excluded from the default selection. Selecting one explicitly still masks it.
+  - Reports count them (`ignored_by_profile`, `ignored_new_secrets`). They are never silently dropped (D78).
+- **Safety:**
+  - The file must be a regular file of at most 1 MiB, in strict TOML.
+  - Key names and paths are validated.
+  - Saves are atomic.
+  - Entries are location- or key-based, never value-based: there are no hashes of secrets (D79, D78).
+- **Review before mask (D80):** the GUI always shows a Review dialog before masking. Each finding can be unticked, or remembered or unremembered as a false positive, and missing key names can be added there. The CLI offers the same through `veilcode profile …` and the `--findings` file.
 
 ## 6. Operations
 ### 6.1 Mask (`folder → new folder`)
@@ -136,7 +164,7 @@ Every write path must be checked: the joined output path must stay under the out
 - **Per-project vaults (D64):** `--vault <project>.vc` is the recommended pattern. The GUI offers "separate vault for this project".
 
 ## 7. Vault
-- Location: `directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")` data dir, file `vault.vc`. Overridable via `--vault` / config (used by tests).
+- Location: `directories::ProjectDirs::from("com", "Cybermavericx", "Veilcode")` **local (non-roaming) data dir** (D81; on Windows `%LOCALAPPDATA%`), file `vault.vc`. Overridable via `--vault` (per-project vaults recommended, D64).
 - Binary layout:
   ```
   magic "VEILCODE" (8) | format u8 = 1 | m_cost u32 LE | t_cost u32 LE | p_cost u32 LE |
@@ -199,6 +227,7 @@ Every write path must be checked: the joined output path must stay under the out
 - **Protects against:** secrets reaching AI providers, the app leaking data over the network, accidental commits of masked output containing `.git` history.
 - **Does not protect against:**
   - malware or another user on the same machine (mitigation: an encrypted vault with a strong passphrase)
+  - a tampered detection profile: anyone who can write the profile file can make Veilcode skip findings (mitigation: the profile is never read from the input folder (D75); ignored findings are always listed and counted (D78); keep the profile in your own config dir)
   - a compromised build pipeline (mitigation: locked dependencies, CI bans, provenance attestations)
   - secrets that no detector recognises (mitigation: user review and `.veilcodeignore`; the README must say detection is best-effort)
   - OS components outside the app: graphics drivers, the accessibility bus, clipboard managers keeping history of copied restored text, and backup or sync tools copying the restore output folder (which holds real secrets)

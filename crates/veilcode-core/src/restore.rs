@@ -4,9 +4,10 @@
 use crate::error::{CoreError, Result};
 use crate::mask::skipped_paths;
 use crate::paths::{self, OutputDir, RelPath};
+use crate::profile::Profile;
 use crate::report::{KeptReason, RestoreReport};
 use crate::scan::walk::{self, Class, FileEntry};
-use crate::scan::{self, RuleSet, ScanOptions, ScanReport};
+use crate::scan::{self, ScanOptions, ScanReport, Scanner};
 use crate::secret::SecretBytes;
 use crate::token::{NAME_MAX, Token, token_regex};
 use crate::vault::{Session, SessionId, Vault};
@@ -33,22 +34,24 @@ pub(crate) struct Restored {
 /// replaced; `session` (default: newest, D53) decides the walk options
 /// (D57r) and what counts as missing. A clean restore forgets the session
 /// unless `keep` (D60), and only after every output is written and synced.
+/// New secrets the `profile` ignores are only counted (D78).
 pub fn restore(
     input: &Path,
     out: &Path,
     vault: &mut Vault,
     session: Option<&SessionId>,
     keep: bool,
+    profile: &Profile,
 ) -> Result<RestoreReport> {
     let session = require_session(vault, session, None)?;
-    let rules = RuleSet::load()?;
+    let scanner = Scanner::new(profile)?;
     let mut scanned = ScanReport::default();
     let (dirs, files) = walk_input(input, &session.scan_options, &mut scanned)?;
     let out = OutputDir::prepare(out, input)?;
     let tree = Tree {
         dirs: &dirs,
         files: &files,
-        rules: &rules,
+        scanner: &scanner,
     };
     let (report, seen) = restore_tree(&tree, &out, vault, scanned).map_err(|e| out.discard(e))?;
     finish(vault, session, keep, report, &seen)
@@ -58,7 +61,7 @@ pub fn restore(
 struct Tree<'a> {
     dirs: &'a [RelPath],
     files: &'a [InputFile],
-    rules: &'a RuleSet,
+    scanner: &'a Scanner<'a>,
 }
 
 /// Writes and syncs the whole output; session fields are left unset.
@@ -74,7 +77,7 @@ fn restore_tree(
     let mut acc = Totals::default();
     let ctx = FileCtx {
         out,
-        rules: tree.rules,
+        scanner: tree.scanner,
         vault,
     };
     for (rel, file) in tree.files {
@@ -84,12 +87,17 @@ fn restore_tree(
     let mut not_copied = skipped_paths(&scanned.skipped);
     not_copied.extend(acc.changed);
     not_copied.sort();
-    let mut new_secrets = scanned.findings;
+    // D78: secrets the profile ignores are counted, not reported as new.
+    let (ignored, mut new_secrets): (Vec<_>, Vec<_>) = scanned
+        .findings
+        .into_iter()
+        .partition(|f| f.ignored.is_some());
     new_secrets.sort_by(|a, b| (&a.rel_path, a.start).cmp(&(&b.rel_path, b.start)));
     let report = RestoreReport {
         files_written: acc.written,
         tokens_replaced: acc.seen.len(),
         new_secrets,
+        ignored_new_secrets: ignored.len(),
         unknown: acc.unknown.into_iter().collect(),
         not_copied,
         tokens_in_unscanned: acc.tokens_in_unscanned,
@@ -208,7 +216,7 @@ struct Totals {
 
 struct FileCtx<'a> {
     out: &'a OutputDir,
-    rules: &'a RuleSet,
+    scanner: &'a Scanner<'a>,
     vault: &'a Vault,
 }
 
@@ -223,7 +231,7 @@ fn restore_file(
 ) -> Result<()> {
     match walk::classify(&file.path, file.ident)? {
         Class::Text(content) => {
-            scan::scan_text(ctx.rules, file, &content, scanned);
+            scan::scan_text(ctx.scanner, file, &content, scanned);
             let restored = replace_tokens(&content, ctx.vault);
             // D55: a file that received a real value is owner-only.
             let mode = if restored.seen.is_empty() {

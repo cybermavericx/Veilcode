@@ -17,10 +17,10 @@ use zeroize::Zeroizing;
 /// Which findings to mask (D51).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Selection {
-    /// Every finding in the report.
+    /// The default: every finding the profile does not ignore (D78).
     #[default]
     All,
-    /// Only these finding ids.
+    /// Only these finding ids, ignored ones included (user override, D78).
     Ids(BTreeSet<String>),
 }
 
@@ -78,6 +78,7 @@ pub fn mask(
     ttl_secs(opts.ttl_days)?;
     validate_paths(report)?;
     let selected = select(report, selection)?;
+    let ignored_by_profile = count_ignored(report, &selected);
     let tree = read_input(report, input)?;
     let by_file = check_findings(&tree, &selected)?;
     let out = OutputDir::prepare(out, input)?;
@@ -92,6 +93,7 @@ pub fn mask(
         by_file: &by_file,
         label: &label,
         opts,
+        ignored_by_profile,
     };
     mask_into(&run, &out, vault).map_err(|e| {
         vault.restore_snapshot(before);
@@ -106,6 +108,7 @@ struct Run<'a> {
     by_file: &'a [Vec<&'a Finding>],
     label: &'a str,
     opts: &'a MaskOptions,
+    ignored_by_profile: usize,
 }
 
 /// SPEC §6.1 steps 4–6 into the freshly created `out`.
@@ -132,6 +135,7 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
         secrets_masked: plans.iter().map(Vec::len).sum(),
         tokens,
         not_copied,
+        ignored_by_profile: run.ignored_by_profile,
     })
 }
 
@@ -145,10 +149,12 @@ fn validate_paths(report: &ScanReport) -> Result<()> {
     Ok(())
 }
 
-/// D51: the selected findings; an id not in the report is an error.
+/// D51: the selected findings; an id not in the report is an error. The
+/// default leaves out findings the profile ignores (D78).
 fn select<'a>(report: &'a ScanReport, selection: &Selection) -> Result<Vec<&'a Finding>> {
     let Selection::Ids(ids) = selection else {
-        return Ok(report.findings.iter().collect());
+        let not_ignored = report.findings.iter().filter(|f| f.ignored.is_none());
+        return Ok(not_ignored.collect());
     };
     let known: BTreeSet<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
     if let Some(id) = ids.iter().find(|id| !known.contains(id.as_str())) {
@@ -159,6 +165,13 @@ fn select<'a>(report: &'a ScanReport, selection: &Selection) -> Result<Vec<&'a F
         .iter()
         .filter(|f| ids.contains(&f.id))
         .collect())
+}
+
+/// D78: findings the profile ignores that are not selected.
+fn count_ignored(report: &ScanReport, selected: &[&Finding]) -> usize {
+    let chosen: BTreeSet<&str> = selected.iter().map(|f| f.id.as_str()).collect();
+    let ignored = report.findings.iter().filter(|f| f.ignored.is_some());
+    ignored.filter(|f| !chosen.contains(f.id.as_str())).count()
 }
 
 /// SPEC §6.1 step 3 / D13 / D51: re-walk with the report's options. Every

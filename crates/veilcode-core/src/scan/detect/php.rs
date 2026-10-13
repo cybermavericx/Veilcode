@@ -1,6 +1,6 @@
 //! D3: PHP `define('KEY', 'value')` (SPEC §5). Values holding a quote are not detected.
 
-use super::{Candidate, PHP_RULE_ID, is_secret_key};
+use super::{Candidate, ExtraKeys, PHP_RULE_ID, is_secret_key};
 use crate::scan::finding::Detector;
 use regex::bytes::{Regex, RegexBuilder};
 use std::sync::LazyLock;
@@ -18,13 +18,13 @@ pub(crate) fn applies(file_name: &str) -> bool {
 }
 
 /// Adds one candidate per secret-named constant.
-pub(crate) fn detect(content: &[u8], out: &mut Vec<Candidate>) {
+pub(crate) fn detect(content: &[u8], extra: &ExtraKeys, out: &mut Vec<Candidate>) {
     let Some(re) = PHP_RE.as_ref() else { return };
     for caps in re.captures_iter(content) {
         let (Some(key), Some(value)) = (caps.get(1), caps.get(2)) else {
             continue;
         };
-        if !is_secret_key(key.as_bytes()) {
+        if !is_secret_key(key.as_bytes(), extra) {
             continue;
         }
         out.push(Candidate {

@@ -19,6 +19,8 @@ pub struct MaskReport {
     pub tokens: usize,
     /// Input entries not copied (binary, oversized, symlink, excluded,
     /// non-UTF-8 name), sorted.
+    /// Findings the profile marks as ignored that were not masked (D78).
+    pub ignored_by_profile: usize,
     pub not_copied: Vec<String>,
 }
 
@@ -33,6 +35,9 @@ pub struct RestoreReport {
     pub tokens_replaced: usize,
     /// Secrets found in the input: introduced by the AI (previews only).
     pub new_secrets: Vec<Finding>,
+    /// New secrets the profile marks as ignored (D78): a count only; they
+    /// are not in `new_secrets` and do not make the restore unclean.
+    pub ignored_new_secrets: usize,
     /// Token-shaped strings that are not in the vault, sorted, deduplicated.
     pub unknown: Vec<String>,
     /// Tokens of the session that never appear in the input, sorted.

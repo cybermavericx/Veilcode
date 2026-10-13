@@ -85,7 +85,15 @@ fn restore_into(
     keep: bool,
 ) -> RestoreReport {
     let out = lab.dir("restored");
-    restore(masked, &out, vault, Some(id), keep).expect("restore")
+    restore(
+        masked,
+        &out,
+        vault,
+        Some(id),
+        keep,
+        &crate::Profile::default(),
+    )
+    .expect("restore")
 }
 
 fn session<'v>(v: &'v Vault, id: &SessionId) -> Option<&'v Session> {
@@ -111,7 +119,7 @@ fn se2_session_records_scan_options() {
     let opts = ScanOptions {
         no_default_excludes: true,
     };
-    let report = crate::scan(&input, &opts).expect("scan");
+    let report = crate::scan(&input, &opts, &crate::Profile::default()).expect("scan");
     let masked = lab.dir("masked");
     let m = mask(
         &report,
@@ -126,7 +134,15 @@ fn se2_session_records_scan_options() {
     assert_eq!(json["scan_options"]["no_default_excludes"], true);
     assert!(lab.open().sessions()[0].scan_options == opts);
     let out = lab.dir("restored");
-    restore(&masked, &out, &mut vault, Some(&m.session_id), false).expect("restore");
+    restore(
+        &masked,
+        &out,
+        &mut vault,
+        Some(&m.session_id),
+        false,
+        &crate::Profile::default(),
+    )
+    .expect("restore");
     assert_eq!(tree_hashes(&out), tree_hashes(&input));
 }
 
@@ -263,6 +279,31 @@ fn lf4_expiry_on_open() {
         assert!(session(v, &y.session_id).is_some() && v.value(&ty).is_some());
     }
     assert!(!lab.tmp_path().exists());
+}
+
+#[test]
+fn lf4_expiry_boundary_is_inclusive() {
+    // D61: `expires_at <= now` is expired. X expires at E, Y one second later.
+    let lab = Lab::new();
+    let mut vault = test_vault(lab.tmp.path());
+    let x = vault.add_test_session("x", Vec::new()).expect("x");
+    let y = vault.add_test_session("y", Vec::new()).expect("y");
+    let e = vault.data.sessions[0].created + 86_400;
+    vault.data.sessions[0].expires_at = e;
+    vault.data.sessions[1].expires_at = e + 1;
+    vault.save().expect("save");
+    drop(vault);
+    let sha = lab.file_sha();
+    let before = Vault::open_with_clock(&lab.vault_path(), &test_pass(), &ManualClock::new(e - 1));
+    assert_eq!(before.expect("open").expired_removed(), 0);
+    assert_eq!(lab.file_sha(), sha);
+    let at = Vault::open_with_clock(&lab.vault_path(), &test_pass(), &ManualClock::new(e));
+    let at = at.expect("open at E");
+    assert_eq!(at.expired_removed(), 1);
+    for v in [&at, &lab.open()] {
+        assert!(session(v, &x).is_none(), "expires_at == now is expired");
+        assert!(session(v, &y).is_some(), "expires_at == now + 1 stays");
+    }
 }
 
 #[test]
@@ -416,7 +457,14 @@ fn lf7_forget_only_after_output_written() {
     let sha = lab.file_sha();
     let out = lab.dir("restored");
     crate::paths::fail_file_writes_after(Some(2));
-    let err = restore(&masked, &out, &mut vault, Some(&m.session_id), false);
+    let err = restore(
+        &masked,
+        &out,
+        &mut vault,
+        Some(&m.session_id),
+        false,
+        &crate::Profile::default(),
+    );
     crate::paths::fail_file_writes_after(None);
     let err = err.expect_err("write failure");
     let CoreError::PartialOutput { cleaned, cause, .. } = &err else {
@@ -509,7 +557,15 @@ fn lf9_failed_persist_leaves_memory_equal_to_disk() {
     lock(&lab);
     let (dir, m) = &masked[1];
     let out = lab.dir("restored");
-    let err = restore(dir, &out, &mut vault, Some(&m.session_id), false).expect_err("locked");
+    let err = restore(
+        dir,
+        &out,
+        &mut vault,
+        Some(&m.session_id),
+        false,
+        &crate::Profile::default(),
+    )
+    .expect_err("locked");
     assert!(matches!(err, CoreError::SaveLocked), "{err}");
     assert!(out.join(".env").is_file(), "D67: the output stays complete");
     let id = masked[0].1.session_id.clone();

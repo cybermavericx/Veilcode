@@ -1,6 +1,6 @@
 # Veilcode — Execution Plan (for SPEC v1.1)
 
-**Current phase: P3** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
+**Current phase: P4** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
 
 Rules:
 - One phase per branch and PR.
@@ -65,7 +65,11 @@ Global flags: `--vault FILE`, `--passphrase-stdin`, `--report FILE`.
 - Exit codes: 0 ok, 2 error. Scan and restore warnings do not change the exit code; restore prints a summary to stderr.
 - `net-audit.sh` is extended to run the full scan → mask → restore under strace.
 
-Tests: C1–C9, LF8.
+Tests: C1–C9, LF8, PF1–PF7.
+
+Also in P4, the detection profile (SPEC v1.3 §5.1, D74–D80), in core first and then the CLI:
+- core: `profile.rs` (load/save/validate/edit), `scan/detect/custom.rs` (D5), extra_keys in the D2/D3 key filter, `ignored` marking, default selection excluding ignored, `ignored_by_profile` and `ignored_new_secrets` counts;
+- CLI: `veilcode profile list | add-key | remove-key | ignore-key | unignore-key | ignore | unignore`, and `--profile FILE` on scan, mask and restore.
 Acceptance: standard checks ✔ · net-audit ✔ · manual run on a sample WordPress-style folder (C8, documented in the PR).
 
 ## P5 — CLI release v0.1.0
@@ -88,14 +92,15 @@ Acceptance: tag `v0.1.0-rc1` on a fork produces the artifacts and the attestatio
 Screens:
 1. Unlock or create vault
 2. Scan: folder picker, findings list with checkboxes and previews
-3. Mask: output folder, TTL selector (1–365, default 30), "separate vault for this project" option (D64), report
-4. Restore: input and output folders, "keep session" checkbox (default off), report (new, unknown, missing, plus "session forgotten" or the kept reason)
-5. Sessions: age and expiry columns, delete, "Purge all" with confirmation (D63)
-6. Text Mode: two text areas, plus the warning on restored text
+3. Review (mandatory before mask, D80): findings grouped by key or rule with file, line and preview; tick or untick; "remember as false positive" (this file / everywhere with confirmation); collapsed "Ignored" section with Unignore; "Add key name" field with re-scan; "Mask N secrets" confirm. Per-project profile option next to the per-project vault.
+4. Mask: output folder, TTL selector (1–365, default 30), "separate vault for this project" option (D64), report
+5. Restore: input and output folders, "keep session" checkbox (default off), report (new, unknown, missing, plus "session forgotten" or the kept reason)
+6. Sessions: age and expiry columns, delete, "Purge all" with confirmation (D63)
+7. Text Mode: two text areas, plus the warning on restored text
 
 Auto-lock after 10 minutes without input. A "Lock now" button is always visible.
 Linux CI installs the eframe system libraries (from the eframe/winit docs, logged in VERIFY_LOG). `net-audit.sh` adds the GUI under `xvfb-run`.
-Tests: G1–G6.
+Tests: G1–G8.
 Acceptance: standard checks ✔ · net-audit (CLI + GUI) ✔ · `cargo build --release -p veilcode-gui` succeeds on all 3 OS in CI.
 
 ## P7 — App release v0.2.0

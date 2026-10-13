@@ -1,15 +1,16 @@
 //! Finding and ScanReport (SPEC §5, D12, D13). None of these types can hold a
 //! secret value: only offsets, ids, names, hashes and D25 previews.
 
+use crate::error::{CoreError, Result};
 use crate::hex;
 use crate::scan::ScanOptions;
 use crate::scan::detect::Candidate;
 use crate::secret::SecretBytes;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Which detector produced a finding, in SPEC §5 run order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Detector {
     /// gitleaks rules.
     D1,
@@ -19,10 +20,23 @@ pub enum Detector {
     D3,
     /// URL credentials.
     D4,
+    /// Custom-key assignment for profile `extra_keys` (D77).
+    D5,
+}
+
+/// Why the profile marks a finding as a known false positive (D78).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IgnoreReason {
+    /// Its key name is in `ignored_keys`.
+    ProfileKey,
+    /// An `[[ignored]]` entry matches its file and key name or rule id.
+    ProfileEntry,
 }
 
 /// One detected secret, located by byte offsets. Never contains the value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `Deserialize` reads a user-edited findings file (CLI `--findings`); mask
+/// checks every path, offset and hash before using it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     /// First 16 hex chars of sha256("rel_path|start|end|rule_id").
     pub id: String,
@@ -40,16 +54,21 @@ pub struct Finding {
     pub rule_id: String,
     /// The detector.
     pub detector: Detector,
-    /// The key name for D2/D3.
+    /// The key name for D2/D3/D5.
+    #[serde(default)]
     pub key_name: Option<String>,
     /// D25 preview of the value.
     pub preview: String,
     /// Lowercase hex sha256 of the whole file at scan time.
     pub file_sha256: String,
+    /// Set when the profile marks this finding; excluded from the default
+    /// selection (D78).
+    #[serde(default)]
+    pub ignored: Option<IgnoreReason>,
 }
 
 /// A text file that was scanned, with its hash (D13).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScannedFile {
     /// `/`-separated relative path.
     pub rel_path: String,
@@ -58,7 +77,8 @@ pub struct ScannedFile {
 }
 
 /// Files that were not scanned, by reason (relative paths).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Skipped {
     /// A NUL byte in the first 8 KiB.
     pub binary: Vec<String>,
@@ -75,7 +95,7 @@ pub struct Skipped {
 }
 
 /// The result of a scan.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanReport {
     /// Findings sorted by (rel_path, start).
     pub findings: Vec<Finding>,
@@ -143,5 +163,23 @@ pub(crate) fn build(file: &FileCtx<'_>, c: &Candidate) -> Finding {
         key_name: c.key_name.clone(),
         preview: value.preview(),
         file_sha256: file_sha256.to_string(),
+        ignored: None,
     }
+}
+
+impl ScanReport {
+    /// Reads a findings file written by `to_json` (CLI `--findings`). Errors
+    /// give the position only, never the parser text.
+    pub fn from_json(bytes: &[u8]) -> Result<ScanReport> {
+        serde_json::from_slice(bytes).map_err(|e| CoreError::FindingsFile {
+            line: e.line(),
+            column: e.column(),
+        })
+    }
+}
+
+/// Pretty JSON of a report (scan, mask, restore, status). Reports hold no
+/// secret values, only ids, counts, paths and D25 previews.
+pub fn to_json<T: Serialize>(report: &T) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(report).map_err(|_| CoreError::ReportEncode)
 }

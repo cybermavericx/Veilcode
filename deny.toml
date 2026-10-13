@@ -29,6 +29,13 @@ allow = [
 ]
 confidence-threshold = 0.8
 
+# D84: directories -> dirs-sys -> option-ext 0.2.0 is MPL-2.0 (file-level
+# copyleft, used unmodified; notice in THIRD_PARTY_NOTICES). Allowed for this
+# one crate only; MPL-2.0 stays off the global allow-list.
+[[licenses.exceptions]]
+crate = "option-ext"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

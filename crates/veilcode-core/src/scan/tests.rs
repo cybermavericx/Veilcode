@@ -13,7 +13,7 @@ use crate::token::TokenGen;
 use std::path::Path;
 
 fn run(dir: &Path) -> ScanReport {
-    scan(dir, &ScanOptions::default()).expect("scan")
+    scan(dir, &ScanOptions::default(), &crate::Profile::default()).expect("scan")
 }
 
 fn json(report: &ScanReport) -> Vec<u8> {
@@ -269,7 +269,7 @@ fn s11_git_always_excluded() {
     let opts = ScanOptions {
         no_default_excludes: true,
     };
-    let r = scan(dir.path(), &opts).expect("scan");
+    let r = scan(dir.path(), &opts, &crate::Profile::default()).expect("scan");
     let paths: Vec<_> = r.findings.iter().map(|f| f.rel_path.as_str()).collect();
     assert_eq!(paths, vec!["node_modules/x.js"]);
     assert_eq!(
@@ -581,7 +581,7 @@ fn s21_git_case_and_trailing_dot_variants() {
     let opts = ScanOptions {
         no_default_excludes: true,
     };
-    let r = scan(dir.path(), &opts).expect("scan");
+    let r = scan(dir.path(), &opts, &crate::Profile::default()).expect("scan");
     assert_eq!(r.findings, vec![]);
     assert_eq!(r.skipped.excluded, want);
     assert_no_secret(&json(&r), &secrets);

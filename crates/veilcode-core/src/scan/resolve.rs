@@ -30,30 +30,69 @@ pub(crate) fn resolve(content: &[u8], cands: Vec<Candidate>) -> Vec<Candidate> {
     cands.sort_by_key(|c| c.start);
     // Sweep by start: a candidate starting before the current group's end
     // overlaps the group, so D48b merges the whole connected group.
-    // Each group is (winner with its own span, union start, union end).
-    let mut groups: Vec<(Candidate, usize, usize)> = Vec::new();
+    let mut groups: Vec<Group> = Vec::new();
     for c in cands {
         match groups.last_mut() {
-            Some((win, _, end)) if c.start < *end => {
-                *end = (*end).max(c.end);
-                if d10_order(&c, win) == Ordering::Less {
-                    *win = c;
-                }
-            }
-            _ => {
-                let (start, end) = (c.start, c.end);
-                groups.push((c, start, end));
-            }
+            Some(g) if c.start < g.end => g.add(c),
+            _ => groups.push(Group::new(c)),
         }
     }
-    groups
-        .into_iter()
-        .map(|(mut win, start, end)| {
-            win.start = start;
-            win.end = end;
-            win
-        })
-        .collect()
+    groups.into_iter().map(Group::finish).collect()
+}
+
+/// One connected group of overlapping candidates (D48b).
+struct Group {
+    /// The D10 winner, with its own span.
+    win: Candidate,
+    /// D86: the key name of the first keyed candidate in D10 order.
+    keyed: Option<(Candidate, String)>,
+    start: usize,
+    end: usize,
+}
+
+impl Group {
+    fn new(c: Candidate) -> Group {
+        let mut g = Group {
+            start: c.start,
+            end: c.end,
+            keyed: None,
+            win: c.clone(),
+        };
+        g.note_key(c);
+        g
+    }
+
+    fn add(&mut self, c: Candidate) {
+        self.end = self.end.max(c.end);
+        if d10_order(&c, &self.win) == Ordering::Less {
+            self.win = c.clone();
+        }
+        self.note_key(c);
+    }
+
+    fn note_key(&mut self, c: Candidate) {
+        let Some(key) = c.key_name.clone() else {
+            return;
+        };
+        let first = match &self.keyed {
+            Some((k, _)) => d10_order(&c, k) == Ordering::Less,
+            None => true,
+        };
+        if first {
+            self.keyed = Some((c, key));
+        }
+    }
+
+    /// The winner over the union span, carrying the D86 key name.
+    fn finish(self) -> Candidate {
+        let mut win = self.win;
+        win.start = self.start;
+        win.end = self.end;
+        if let Some((_, key)) = self.keyed {
+            win.key_name = Some(key);
+        }
+        win
+    }
 }
 
 /// True if the span is exactly a placeholder token (SPEC §4, D48a).

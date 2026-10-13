@@ -39,6 +39,14 @@ Review `git diff main...HEAD` (and the files it touches) against `CLAUDE.md`, th
    - Status, purge and open results carry counts and times only.
    - The Clock is not a production backdoor: a manual clock is never selectable from the CLI or GUI.
    - The docs (README, THREAT_MODEL) state the D65 limits honestly and do not overclaim "secure deletion".
+9. **Detection profile (SPEC v1.3 §5.1; D74–D80):**
+   - The profile is never read from the input folder (D75).
+   - Profile load enforces D79: regular file, at most 1 MiB, strict TOML, validated keys and paths.
+   - The profile never stores values or hashes of values (D78).
+   - Ignored findings are always reported and counted, never silently dropped.
+   - An explicit selection still masks an ignored finding.
+   - D5 cannot be steered by input content into masking huge spans or skipping real secrets beyond D77's rules.
+   - The CLI and GUI make "ignore everywhere" a deliberate, confirmed action.
 
 ## Report format
 List findings ranked by severity: **Critical / High / Medium / Low / Info**. For each give the file:line, the concrete failure scenario (input → bad outcome) and the fix direction. Then give the checklist table. Do not pad: if nothing is wrong, say "no findings" and show the evidence commands you ran.
