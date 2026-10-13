@@ -27,3 +27,12 @@ opt-level = 3
 
 [profile.dev.package.regex-automata]
 opt-level = 3
+
+# D92: release binaries are stripped of symbols and built as one LTO unit for
+# size. `panic` stays at its default (unwind) so zeroize-on-drop still runs
+# while a panic unwinds. Keys and values: cargo profiles reference (VERIFY_LOG
+# 2026-10-13).
+[profile.release]
+strip = true
+codegen-units = 1
+lto = "fat"

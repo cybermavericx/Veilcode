@@ -2,3 +2,4 @@ target/
 *.vc
 *.vc.tmp
 proptest-regressions/
+*.cdx.json
