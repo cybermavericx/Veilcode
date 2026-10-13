@@ -30,7 +30,7 @@ scripts/check-offline.sh, scripts/check-test-ids.sh, scripts/net-audit.sh
 ```
 - All three crates are members of one Cargo workspace (D20).
 - The core is the only place with logic. The CLI and GUI are thin wrappers.
-- **Supported platforms for v1:** Windows 10/11 x86_64 and Linux x86_64 (glibc; X11 and Wayland). macOS is built and tested in CI but not released (§13).
+- **Supported platforms for v1:** Windows 10/11 x86_64 and Linux x86_64 (CLI: static musl binary, D91; GUI: glibc, X11 and Wayland). macOS is built and tested in CI but not released (§13).
 
 ## 4. Placeholder tokens
 - Format: `VEILCODE_<NAME>_<HEX8>`

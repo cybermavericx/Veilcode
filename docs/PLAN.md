@@ -74,7 +74,7 @@ Acceptance: standard checks ✔ · net-audit ✔ · manual run on a sample WordP
 
 ## P5 — CLI release v0.1.0
 - [ ] `.github/workflows/release.yml` triggers on a `v*` tag and builds `veilcode` for **linux-x86_64 and windows-x86_64** (macOS is not released; SPEC §13).
-- [ ] Each release includes SHA256SUMS, an SBOM (`cargo cyclonedx`), and build-provenance attestations (`actions/attest-build-provenance`).
+- [ ] Each release includes SHA256SUMS, an SBOM (`cargo cyclonedx`), and build-provenance attestations (`actions/attest`, D90). Linux is a static musl binary, Windows is MSVC, and the release is created as a draft for the maintainer to publish (D91–D93).
 - [ ] `docs/THREAT_MODEL.md` (expanded SPEC §11, including the D65 retention limits) and `docs/VERIFY_OFFLINE.md`. The latter covers:
   - Linux: `unshare -rn veilcode ...` and `strace`.
   - Windows: a Firewall outbound-block rule plus Resource Monitor / Wireshark.
