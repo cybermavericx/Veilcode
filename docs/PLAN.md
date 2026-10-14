@@ -73,16 +73,16 @@ Also in P4, the detection profile (SPEC v1.3 §5.1, D74–D80), in core first an
 Acceptance: standard checks ✔ · net-audit ✔ · manual run on a sample WordPress-style folder (C8, documented in the PR).
 
 ## P5 — CLI release v0.1.0
-- [ ] `.github/workflows/release.yml` triggers on a `v*` tag and builds `veilcode` for **linux-x86_64 and windows-x86_64** (macOS is not released; SPEC §13).
-- [ ] Each release includes SHA256SUMS, an SBOM (`cargo cyclonedx`), and build-provenance attestations (`actions/attest`, D90). Linux is a static musl binary, Windows is MSVC, and the release is created as a draft for the maintainer to publish (D91–D93).
-- [ ] `docs/THREAT_MODEL.md` (expanded SPEC §11, including the D65 retention limits) and `docs/VERIFY_OFFLINE.md`. The latter covers:
+- [x] `.github/workflows/release.yml` triggers on a `v*` tag and builds `veilcode` for **linux-x86_64 and windows-x86_64** (macOS is not released; SPEC §13).
+- [x] Each release includes SHA256SUMS, an SBOM (`cargo cyclonedx`), and build-provenance attestations (`actions/attest`, D90). Linux is a static musl binary, Windows is MSVC, and the release is created as a draft for the maintainer to publish (D91–D93).
+- [x] `docs/THREAT_MODEL.md` (expanded SPEC §11, including the D65 retention limits) and `docs/VERIFY_OFFLINE.md`. The latter covers:
   - Linux: `unshare -rn veilcode ...` and `strace`.
   - Windows: a Firewall outbound-block rule plus Resource Monitor / Wireshark.
   - Verifying checksums and attestations with `gh attestation verify`.
-- [ ] README: install, 60-second demo, honest limitations (detection is best-effort, binaries are unsigned for now, D3 quote limitation), and the D65 retention section: keep retention short, exclude the data dir from sync and backup, passphrase strength, and malware while unlocked. Also the per-project vault pattern (D64).
+- [x] README: install, 60-second demo, honest limitations (detection is best-effort, binaries are unsigned for now, D3 quote limitation), and the D65 retention section: keep retention short, exclude the data dir from sync and backup, passphrase strength, and malware while unlocked. Also the per-project vault pattern (D64).
 
 Tests: REL1–REL3.
-Acceptance: tag `v0.1.0-rc1` on a fork produces the artifacts and the attestation verifies.
+Acceptance: tag `v0.1.0-rc1` on a fork produces the artifacts and the attestation verifies. **Met 2026-10-14** on the main repo with `v0.1.0-rc2` (draft pre-release; REL1–REL3 evidence in VERIFY_LOG). `rc1` failed at the musl target install, fixed in #9.
 
 ## P6 — Desktop app (eframe/egui, native)
 - Create `crates/veilcode-gui` (bin `veilcode-gui`). Add `eframe` with `default-features = false` and only the SPEC §9 features, plus `egui-file-dialog`.
