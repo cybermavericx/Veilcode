@@ -53,13 +53,18 @@ jobs:
           persist-credentials: false
       # rustup is preinstalled on GitHub's runner images (VERIFY_LOG 2026-10-14);
       # with no toolchain argument it installs the one pinned in
-      # rust-toolchain.toml, and -t adds the target's std (a no-op for the msvc
-      # host). No third-party setup action, no cache (D95).
+      # rust-toolchain.toml. The target std is added separately: `toolchain
+      # install -t` is ignored when the toolchain is already present (seen on
+      # the v0.1.0-rc1 run). No third-party setup action, no cache (D95).
       - name: install pinned toolchain
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: rustup toolchain install --no-self-update -t "$TARGET" && rustup show active-toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+          rustup show active-toolchain
+          rustup target list --installed | grep -Fx "$TARGET"
       - name: check tag name
         shell: bash
         run: |
