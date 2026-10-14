@@ -189,6 +189,9 @@ jobs:
     needs: [build, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Protected environment: the maintainer must approve each run before this
+    # job receives its OIDC and write tokens; only v* tags may deploy (D94).
+    environment: release
     # Only this job may write. artifact-metadata: write is left out (D93
     # amended): actions/attest needs it only for registry storage records.
     permissions:

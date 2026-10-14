@@ -138,16 +138,20 @@ Not protected: a compromised build pipeline or a malicious upstream crate
 version that passes these checks (§11). Release binaries are **not code
 signed** yet (code signing is planned for v1.x, §13).
 
-**Recommended repository settings** (maintainer-side controls; this document
-does not claim they are enabled):
+**Repository settings** (maintainer-side controls; enabled and checked via the
+GitHub API on 2026-10-14, D94; settings can change, so re-check before
+relying on them):
 
-- A tag ruleset for `v*` tags, so only the maintainer can create or move
+- A tag ruleset for `v*` tags: only the maintainer can create, move or delete
   release tags.
-- A protected release environment with a required reviewer for the job that
-  creates the release.
+- A protected `release` environment with a required reviewer: the job that
+  signs and creates the release cannot start until the maintainer approves it.
 - Read-only default workflow permissions (`GITHUB_TOKEN`), with write access
   granted per job only where needed.
-- Immutable releases, so published release assets cannot be replaced.
+- Actions limited to GitHub-owned actions plus the Rust toolchain action, all
+  pinned to full commit SHAs.
+- Immutable releases: published release assets and their tag cannot be
+  replaced.
 
 ### 4.6 A network observer
 
