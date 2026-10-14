@@ -504,13 +504,23 @@ fn pf6_caps(d: &Path) {
 fn pf3b_ignore_applies_when_gitleaks_also_matches() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let input = tmp.path().join("in");
-    let v = random_alnum(28);
-    write_tree(
-        &input,
-        &[("config.yml", format!("customapi-pass: {v}\n").as_bytes())],
-    );
-    let rules = scan_with(&input, &Profile::default());
-    assert_eq!(rules.findings.len(), 1, "generic-api-key also matches");
+    // Not every random value passes generic-api-key's own checks, so pick one
+    // that does: the precondition is "a gitleaks rule also matches".
+    let mut v = String::new();
+    let mut rules = None;
+    for _ in 0..50 {
+        v = random_alnum(28);
+        write_tree(
+            &input,
+            &[("config.yml", format!("customapi-pass: {v}\n").as_bytes())],
+        );
+        let r = scan_with(&input, &Profile::default());
+        if r.findings.len() == 1 {
+            rules = Some(r);
+            break;
+        }
+    }
+    let rules = rules.expect("a value that generic-api-key also matches");
     assert_eq!(rules.findings[0].detector, Detector::D1);
     let both =
         "version = 1\nextra_keys = [\"customapi-pass\"]\nignored_keys = [\"customapi-pass\"]\n";
