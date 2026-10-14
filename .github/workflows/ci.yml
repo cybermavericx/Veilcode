@@ -19,15 +19,19 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # Zero-warnings rule for every build in this job.
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # toolchain left empty: the action reads rust-toolchain.toml.
-      # build-warnings keeps its default (deny), matching our zero-warnings rule.
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          cache: false
+      # rustup is preinstalled on GitHub's runner images (VERIFY_LOG 2026-10-14).
+      # With no argument it installs the toolchain and components pinned in
+      # rust-toolchain.toml. No third-party setup action is used (D95).
+      - name: install pinned toolchain
+        shell: bash
+        run: rustup toolchain install --no-self-update && rustup show active-toolchain
       # cargo fmt has no --locked flag (it does not resolve dependencies).
       - name: fmt
         shell: bash
@@ -53,9 +57,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          cache: false
+      - name: install pinned toolchain (rustup, D95)
+        shell: bash
+        run: rustup toolchain install --no-self-update && rustup show active-toolchain
       # Built from crates.io source (crate checksums verified via its own lockfile)
       # instead of cargo-deny-action, which downloads an unverified binary (VERIFY_LOG 2026-10-10).
       - name: install cargo-deny
@@ -73,9 +77,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          cache: false
+      - name: install pinned toolchain (rustup, D95)
+        shell: bash
+        run: rustup toolchain install --no-self-update && rustup show active-toolchain
       - name: install strace
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y strace util-linux

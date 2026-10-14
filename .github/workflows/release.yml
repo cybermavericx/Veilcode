@@ -51,12 +51,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # toolchain left empty: reads rust-toolchain.toml. `target` adds the
-      # musl std (a no-op for the msvc host). Cache off for supply-chain reasons.
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          cache: false
-          target: ${{ matrix.target }}
+      # rustup is preinstalled on GitHub's runner images (VERIFY_LOG 2026-10-14);
+      # with no toolchain argument it installs the one pinned in
+      # rust-toolchain.toml, and -t adds the target's std (a no-op for the msvc
+      # host). No third-party setup action, no cache (D95).
+      - name: install pinned toolchain
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup toolchain install --no-self-update -t "$TARGET" && rustup show active-toolchain
       - name: check tag name
         shell: bash
         run: |
@@ -71,7 +74,7 @@ jobs:
       - name: set path-remap flags (D92)
         shell: bash
         run: |
-          # Cargo home resolved the same way setup-rust-toolchain does; on
+          # Cargo home resolved the way rustup does (CARGO_HOME, else ~/.cargo); on
           # Windows rustc sees native paths, so use backslashes.
           if [ "$RUNNER_OS" = Windows ]; then
             cargo_home=$(printf '%s' "${CARGO_HOME:-$USERPROFILE/.cargo}" | sed 's|/|\\|g')
@@ -128,9 +131,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        with:
-          cache: false
+      - name: install pinned toolchain (rustup, D95)
+        shell: bash
+        run: rustup toolchain install --no-self-update && rustup show active-toolchain
       - name: check tag name
         shell: bash
         run: |
@@ -189,6 +192,9 @@ jobs:
     needs: [build, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Protected environment: the maintainer must approve each run before this
+    # job receives its OIDC and write tokens; only v* tags may deploy (D94).
+    environment: release
     # Only this job may write. artifact-metadata: write is left out (D93
     # amended): actions/attest needs it only for registry storage records.
     permissions:
