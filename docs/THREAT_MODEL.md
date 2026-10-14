@@ -129,10 +129,11 @@ is encrypted, so a strong passphrase is the last line of defence (§11).
   built by this repository's release workflow from a given tag (see
   VERIFY_OFFLINE.md). The attestation proves which workflow file built it, not
   that the workflow's content was reviewed.
-- Release builds normalise embedded build paths (D92). Byte-for-byte
-  reproducibility is verified **only for the Linux build, on one host** (two
-  build directories gave identical sha256). Reproducibility across machines,
-  and for the Windows build, is **unverified**.
+- Release builds normalise embedded build paths (D92). The **Linux** build is
+  byte-for-byte reproducible across machines: the v0.1.0-rc2 binary built by
+  CI has the same sha256 as one built locally from the same commit, so anyone
+  can rebuild it and compare. Reproducibility of the **Windows** build is
+  **unverified** (the MSVC linker writes a timestamp).
 
 Not protected: a compromised build pipeline or a malicious upstream crate
 version that passes these checks (§11). Release binaries are **not code
