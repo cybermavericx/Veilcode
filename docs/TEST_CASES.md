@@ -496,7 +496,7 @@ Type: auto
 With an injected clock, advancing it 10 min + 1 s with no input locks the vault and drops the key, and a zeroize call counter on the key wrapper is incremented. An input event at 9 min resets the timer.
 ### G4 — forbidden features absent
 Type: auto
-A test parses `cargo metadata --format-version 1` (via `std::process::Command` in `crates/veilcode-gui/tests/`) and asserts that the enabled features of `eframe` and `egui-winit` include neither `links` nor `persistence`, and that no package named `webbrowser`, `open` or `opener` is in the resolved graph.
+A test parses `cargo metadata --format-version 1 --filter-platform <target>` (via `std::process::Command` in `crates/veilcode-gui/tests/`) for the Linux and Windows targets. It asserts that the enabled features of `eframe` and `egui-winit` include neither `links` nor `persistence`, that no package named `webbrowser`, `open`, `opener` or any HTTP/TLS crate is in the resolved graph, and (D104, D108) that `zbus`, `atspi`, `accesskit_unix`, `async-io` and `async-process` are absent on Linux and `accesskit_windows` is present on Windows. The per-target check uses `cargo tree --target <t>`, because `cargo metadata` merges features across targets (cargo#7754).
 ### G5 — manual QA
 Type: manual
 Checklist in the PR: each screen, light and dark, on Windows 11 (local and over RDP) and on Ubuntu (X11 and Wayland). Keyboard-only navigation works. **Sessions screen (D63):** age and expiry columns are shown; "Purge all" asks for confirmation, and cancelling changes nothing. The restore screen has a "keep session" checkbox (default off) and shows "session forgotten" or the kept reason. The mask screen has "separate vault for this project" (D64) and a TTL selector (1–365, default 30).
@@ -519,6 +519,26 @@ In the PR, check:
 - that the counts match the MaskReport.
 
 Do this on Windows and Linux.
+### G9 — Linux display guard (D105)
+Type: auto
+The display-validation function accepts unset, and `:0`, `:1.0`, `unix:0` only together with a passing preflight (D109; see G9b). It rejects path forms such as `/tmp/.X11-unix/X0`, and also `localhost:10`, `host:0`, `10.0.0.1:0`, `tcp/host:0`, `[::1]:0` and an empty string, with an error that names `DISPLAY` but does not contain the value.
+### G9b — X11 preflight (D109, Linux)
+Type: auto
+The guard accepts `:N` only when the preflight connect to `/tmp/.X11-unix/XN` succeeds, or (Linux, D110) the connect to the abstract socket of the same name succeeds. Use a test listener bound with `std::os::unix::net::UnixListener` in a temp dir, through an injectable socket-path base, so the test never touches the real `/tmp/.X11-unix`.
+
+Pass when:
+- `:N` with no socket present is refused;
+- `:N` with a socket file that refuses connections is refused;
+- `:N` with a listening socket is accepted;
+- `unix:N` follows the same rules;
+- path forms and host forms are refused;
+- the refusal message contains neither the value nor a suggested value.
+
+A strace run of the release binary with `DISPLAY=:N` and no server makes no `AF_INET` or `AF_INET6` socket call.
+### G10 — job result after lock is discarded (D106)
+Type: auto
+With a deferred runner: start a scan, a mask and a `restore_text`, lock, then deliver each result. Pass when no vault, view model or text comes back, every lock path ran the wipe (`key_wipes` and form wipes incremented), and the stale restored text was wiped.
+
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

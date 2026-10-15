@@ -15,8 +15,9 @@ which detected secrets are replaced by placeholder tokens such as
 `VEILCODE_DB_PASSWORD_<hex8>`, and stores the real values in an encrypted vault
 file. You give the masked folder to an AI assistant yourself. Afterwards
 `veilcode restore` writes another new folder with the tokens replaced by the
-real values. Veilcode never talks to the AI assistant or to anything else on
-the network.
+real values. Veilcode has no feature that talks to the AI assistant or to any
+other network service; §8 says exactly what is enforced and what is only
+tested.
 
 ## 2. Assets
 
@@ -214,7 +215,12 @@ reopen the vault to see its true state (D67, D72).
   sync tools copying the restore output folder (which holds real secrets).
 - **Memory forensics on a running process.** Key and plaintext buffers are
   zeroized on drop, but intermediate serialisation buffers are best-effort
-  (§7); zeroization in general is best-effort.
+  (§7); zeroization in general is best-effort. In the desktop app, text typed
+  into a field is held by the GUI library (egui), including its undo history.
+  Veilcode removes that state after a passphrase is submitted and on lock, but
+  egui frees those strings without overwriting them first, so copies can
+  remain in freed memory until it is reused (D106). Text Mode contents are
+  handled the same way.
 - **Old copies of the vault** kept by SSD wear-levelling, backups or sync
   (§5 above).
 - **A weak passphrase** on any vault copy an attacker obtains.
@@ -235,18 +241,42 @@ reopen the vault to see its true state (D67, D72).
 - **Profile FIFO race (D88).** The profile file is checked with `lstat`, opened,
   and on Unix its device and inode are compared; a FIFO swapped in during that
   window can block, the same accepted risk as D45.
+- **X11 display race (D109).** On Linux the desktop app connects to the local
+  X socket itself before starting and refuses to run if no local server
+  answers. If the X server stops between that check and the GUI library's own
+  connection, the X11 libraries fall back to TCP on `localhost:6000+N`. That
+  window is short, and something must also be listening on that port for the
+  connection to succeed.
+- **Runtime C libraries are not audited for network use.** The checks above
+  cover Rust crates. System libraries loaded at run time (graphics drivers,
+  Mesa/libGL, libX11, libwayland) are not inspected; the strace audit only
+  shows what they did in the scenarios it ran.
 - **Best-effort zeroization** (§6 above).
 - **Best-effort detection** (§6 above).
 - **Tampered profile** (§6 above).
 
-## 8. Offline guarantee
+## 8. Offline design and how it is checked
 
-The exact claim, and nothing stronger (SPEC §2.1, D2):
+The exact claim, and nothing stronger (SPEC §2.1, D107):
 
-> **Offline by construction.** Veilcode's own code contains no network calls and
-> does not launch other programs. HTTP, TLS, DNS, WebSocket and browser-launch
-> crates are banned from the dependency graph. On Linux, CI proves at runtime
-> that neither the CLI nor the GUI opens an internet socket (§10).
+> **Offline design.** Veilcode has no network features. Its own crates make no
+> network calls and do not use `std::process::Command`; CI enforces this with
+> text checks and type-aware clippy bans. A fixed list of HTTP, TLS, DNS,
+> WebSocket and browser-launch crates is banned from the dependency graph (SPEC
+> §10.1). Some lower-level libraries can still open a network connection if the
+> environment tells them to: the X11 client libraries connect over TCP when
+> `DISPLAY` names another machine, or when a local display number gets no
+> answer. So on Linux the desktop app links no D-Bus client crate, and it starts
+> only if `DISPLAY` is unset or names a local display whose X server answers on
+> its local socket (D104, D105, D109). On Linux, CI runs defined CLI and GUI
+> scenarios under strace in an empty network namespace and fails if any
+> non-local socket is opened. This tests those scenarios; it does not prove
+> every possible code path. Windows has no runtime audit in CI.
+
+**Enforced** (the build fails if violated): items 1 and 2 below, for code in
+`crates/*/src`, plus the crate bans for the whole dependency graph.
+**Tested, not proven**: item 3 covers only the scenarios it runs; a dependency
+code path those scenarios never reach is not exercised.
 
 How it is enforced (SPEC §10):
 
@@ -257,17 +287,18 @@ How it is enforced (SPEC §10):
 2. **Clippy type bans.** `clippy.toml` lists the `std::net` socket types,
    `ToSocketAddrs` and `std::process::Command` as `disallowed-types` and
    `disallowed-methods`; CI runs clippy with `-D warnings`, so any use in
-   `crates/*/src` fails the build. Unlike the text check, this cannot be
-   bypassed with aliases or unusual imports.
+   `crates/*/src` fails the build. Unlike the text check, it is not fooled
+   by aliases or unusual imports. It applies to our crates only, not to code
+   inside dependencies.
 3. **Runtime syscall audit.** `scripts/net-audit.sh` runs the CLI end to end
    (help, scan, mask, restore, vault status, vault purge) inside an **empty
    network namespace** (only a down loopback) under
    `strace -f -e trace=socket,connect,execve,io_uring_setup`. It fails on any
    socket or connect with a family other than `AF_UNIX`, on any `io_uring`
-   setup, and on any process launch. Linux CI runs it on every change. The
-   GUI is added to this audit when it ships.
+   setup, and on any process launch. It also launches the GUI under Xvfb for
+   10 seconds with the same rules. Linux CI runs it on every change.
 
-Windows has no strace equivalent in CI; it is verified by hand (§10.5).
+Windows has no strace equivalent in CI. VERIFY_OFFLINE.md describes a manual check (firewall rule plus monitoring); that manual check has not yet been carried out for a release.
 
 ## 9. How you can verify
 

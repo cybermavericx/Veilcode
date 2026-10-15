@@ -22,7 +22,7 @@ This is for the maintainer. Claude Code does not need to read it each session.
 - There is no web engine: the GUI is native Rust (egui), so there is no JavaScript, no npm and no browser component that could fetch anything. The whole program is a single Rust dependency graph that `cargo deny` audits.
 - HTTP, TLS, DNS and browser-launch crates are banned.
 - Our own code can't open sockets or launch programs; a grep in CI enforces this.
-- On every PR, Linux CI runs the CLI and the GUI under `strace` and fails if any internet socket is opened, whatever a library does.
+- On every PR, Linux CI runs defined CLI and GUI scenarios under `strace` in an empty network namespace and fails if any non-local socket is opened. This tests those scenarios; it does not prove every code path (D107).
 - Secrets live only in an Argon2id + XChaCha20-Poly1305 vault. Reports, logs and the GUI show 4-character previews only.
 
 ## Anti-hallucination layers

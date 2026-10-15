@@ -3,8 +3,9 @@
 # unshare and setpriv (util-linux).
 #
 # Usage: net-audit.sh [--stdin FILE] [binary [args...]]
-#   no arguments: build the CLI and audit the default scenarios below
-#                 (C9: --help, scan, mask, restore, vault status, vault purge).
+#   no arguments: build the CLI and the GUI and audit the default scenarios
+#                 below (C9: --help, scan, mask, restore, vault status, vault
+#                 purge; G6: veilcode-gui for GUI_SECONDS under xvfb-run).
 #   binary args:  audit just that command (used by test O4 with probes).
 #   --stdin FILE: the audited command reads FILE on stdin (a plain shell
 #                 redirect, so no extra process appears in the trace).
@@ -17,7 +18,8 @@
 #   - any io_uring_setup (io_uring can do network I/O that strace's socket
 #     filter would not see);
 #   - any execve after the first one (the scenario binary itself);
-#   - a scenario that exits non-zero or times out.
+#   - a scenario that exits non-zero or times out (the GUI scenario instead
+#     must still be running when its GUI_SECONDS timer kills it).
 # If any of these appear, stop and report; never allow-list them here.
 set -eu
 cd "$(dirname "$0")/.."
@@ -57,6 +59,7 @@ if [ "$ifaces" != "lo" ]; then
 fi
 
 TIMEOUT_S=60
+GUI_SECONDS=10
 fail=0
 work=""
 log=$(mktemp "${TMPDIR:-/tmp}/net-audit.XXXXXX")
@@ -100,6 +103,44 @@ audit() {
   else
     n=$(grep -cE '(socket|connect)\(' "$log" || true)
     echo "net-audit: ok ($n socket/connect calls, all AF_UNIX; no spawn, no io_uring)"
+  fi
+}
+
+# audit_gui BIN: G6 (SPEC §10.3, D100). Runs BIN in the netns on a private
+# Xvfb display for GUI_SECONDS. strace sits INSIDE xvfb-run, so only the GUI's
+# own process tree is traced (not xvfb-run, xauth or Xvfb), and `timeout` sits
+# outside strace, so the GUI is still the only execve allowed. WAYLAND_DISPLAY
+# is unset so winit uses X11 (VERIFY_LOG 2026-10-14), and HOME/XDG dirs are
+# throwaway. The inner exit status goes to a file, so the outer hang guard's
+# 124 cannot be mistaken for the inner timer's 124 ("ran until killed").
+audit_gui() {
+  gui=$1
+  gd="$work/gui"
+  mkdir -p "$gd/home" "$gd/run"
+  chmod 700 "$gd/run"
+  echo "net-audit: running: xvfb-run -a $gui (${GUI_SECONDS} s)"
+  set +e
+  # shellcheck disable=SC2086,SC2016  # $NETNS split on purpose; sh -c script is literal
+  timeout "$TIMEOUT_S" $NETNS env -u WAYLAND_DISPLAY \
+    HOME="$gd/home" XDG_CONFIG_HOME="$gd/home/.config" XDG_DATA_HOME="$gd/home/.local/share" \
+    XDG_CACHE_HOME="$gd/home/.cache" XDG_STATE_HOME="$gd/home/.local/state" XDG_RUNTIME_DIR="$gd/run" \
+    xvfb-run -a -s "-screen 0 1280x800x24" \
+    sh -c 'timeout "$1" strace -f -e trace=socket,connect,execve,io_uring_setup -o "$2" -- "$3"; echo $? >"$4"' \
+    sh "$GUI_SECONDS" "$log" "$gui" "$gd/rc" </dev/null >/dev/null 2>&1
+  set -e
+  rc=$(cat "$gd/rc" 2>/dev/null || echo "none (xvfb-run failed or hung)")
+  if ! check_trace "$log"; then
+    echo "net-audit: FAIL: forbidden syscall(s) above in: $gui"
+    fail=1
+  elif [ "$rc" != 124 ]; then
+    echo "net-audit: FAIL: GUI did not run for ${GUI_SECONDS} s (exit $rc; 124 = ran until killed): $gui"
+    fail=1
+  elif ! grep -q 'X11-unix' "$log"; then
+    echo "net-audit: FAIL: GUI never connected to the X server: $gui"
+    fail=1
+  else
+    n=$(grep -cE '(socket|connect)\(' "$log" || true)
+    echo "net-audit: ok ($n socket/connect calls, all AF_UNIX; no spawn, no io_uring; ran ${GUI_SECONDS} s)"
   fi
 }
 
@@ -152,6 +193,15 @@ default_scenarios() {
     fi
     if [ "$fail" -eq 0 ]; then echo "net-audit: round trip ok (masked, restored == input, purged)"; fi
   fi
+
+  # G6: the GUI, on a virtual X display (needs xvfb-run, from package xvfb).
+  if ! command -v xvfb-run >/dev/null 2>&1; then
+    echo "net-audit: FAIL: xvfb-run not found (apt-get install xvfb); the GUI audit cannot run"
+    fail=1
+    return
+  fi
+  cargo build --locked --quiet -p veilcode-gui --bin veilcode-gui
+  audit_gui "${CARGO_TARGET_DIR:-target}/debug/veilcode-gui"
 }
 
 stdin_file=/dev/null
