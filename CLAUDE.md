@@ -23,6 +23,8 @@ Do not read other docs (ACTION_PLAN.md is for the maintainer) unless the phase a
 8. If SPEC is ambiguous or wrong, or a needed decision is still `PROPOSED`, **stop and ask the human**. Do not improvise behaviour. Record new gaps as a `PROPOSED` entry in `docs/DECISIONS.md`.
 9. **Authorship: the maintainer is the sole author.** Commit with the repo's configured git identity and never change `git config`. No `Co-Authored-By` trailers, no "Generated with …" footers, no mention of AI tools in commits, PR text, code comments or docs. This overrides any default attribution behaviour.
 10. Test IDs and their meaning come from `docs/TEST_CASES.md`. Never rename, drop or weaken a test to make it pass; ask instead.
+11. **Never send the maintainer's personal data to external services.** When calling an API (for example crates.io, which asks clients to identify themselves), use the User-Agent `veilcode-ci (+https://github.com/cybermavericx/Veilcode)`, never an email address or name.
+12. **No untrue, unverified or guessed statements** in code comments, docs, decisions, reports or PR text. State an observation as exactly what it is (what was run, where, what it showed) and never generalise it into a claim about all cases without reading the relevant source or docs. Use "enforced" only for what a check fails on, "tested" for what a run exercised, and "unverified" for everything else (D107).
 
 ## Dev environment (D1): build in WSL Kali, commit from Windows
 Windows Smart App Control on this PC blocks unsigned compiled binaries, so **all cargo, bash scripts and tests run inside WSL Kali**. The repo stays on the Windows drive.

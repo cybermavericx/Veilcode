@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/veilcode-core", "crates/veilcode-cli"]
+members = ["crates/veilcode-core", "crates/veilcode-cli", "crates/veilcode-gui"]
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cybermavericx/Veilcode"
-rust-version = "1.88"
+rust-version = "1.95"
 
 # Every crate inherits these with `[lints] workspace = true` (cargo >= 1.74).
 # Kept alongside the in-file #![forbid(unsafe_code)].

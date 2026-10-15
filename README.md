@@ -20,14 +20,23 @@ secrets.
 
 ## Offline
 
-**Offline by construction.** Veilcode's own code contains no network calls and
-does not launch other programs. HTTP, TLS, DNS, WebSocket and browser-launch
-crates are banned from the dependency graph. On Linux, CI proves at runtime that
-neither the CLI nor the GUI opens an internet socket (§10).
+**Offline design.** Veilcode has no network features. Its own crates make no
+network calls and do not use `std::process::Command`; CI enforces this with
+text checks and type-aware clippy bans. A fixed list of HTTP, TLS, DNS,
+WebSocket and browser-launch crates is banned from the dependency graph (SPEC
+§10.1). Some lower-level libraries can still open a network connection if the
+environment tells them to: the X11 client libraries connect over TCP when
+`DISPLAY` names another machine, or when a local display number gets no
+answer. So on Linux the desktop app links no D-Bus client crate, and it starts
+only if `DISPLAY` is unset or names a local display whose X server answers on
+its local socket (D104, D105, D109). On Linux, CI runs defined CLI and GUI
+scenarios under strace in an empty network namespace and fails if any
+non-local socket is opened. This tests those scenarios; it does not prove
+every possible code path. Windows has no runtime audit in CI.
 
-(§10 refers to `docs/SPEC.md`. The runtime audit currently covers the CLI; the
-GUI joins it when it ships. See [VERIFY_OFFLINE.md](docs/VERIFY_OFFLINE.md) to
-check this yourself.)
+See [VERIFY_OFFLINE.md](docs/VERIFY_OFFLINE.md) to check this yourself, and
+[THREAT_MODEL.md](docs/THREAT_MODEL.md#8-offline-design-and-how-it-is-checked)
+for exactly what is enforced and what is only tested.
 
 ## Supported platforms
 

@@ -11,11 +11,11 @@ Developers paste server code into AI assistants, including `.env` files and conf
 - A fully open desktop app and CLI for **Windows and Linux**.
 - **No web engine.** The whole program is one Rust dependency graph, with no JavaScript, npm or webview.
 - A whole-folder round trip for any language.
-- Offline behaviour is enforced in CI, both statically and with a runtime syscall audit.
-- Reproducible releases with provenance.
+- Offline behaviour is checked in CI: static bans, plus a runtime syscall audit of defined scenarios (not a proof of every code path).
+- Releases with build provenance. The Linux release binary has been rebuilt byte-for-byte identically; the Windows build is not yet verified as reproducible.
 
 ## 2. Non-negotiable principles
-1. **Offline by construction.** Veilcode's own code contains no network calls and does not launch other programs. HTTP, TLS, DNS, WebSocket and browser-launch crates are banned from the dependency graph. On Linux, CI proves at runtime that neither the CLI nor the GUI opens an internet socket (§10). This is the exact claim the README may make, and nothing stronger.
+1. **Offline design.** Veilcode has no network features. Its own crates make no network calls and do not use `std::process::Command`; CI enforces this with text checks and type-aware clippy bans. A fixed list of HTTP, TLS, DNS, WebSocket and browser-launch crates is banned from the dependency graph (SPEC §10.1). Some lower-level libraries can still open a network connection if the environment tells them to: the X11 client libraries connect over TCP when `DISPLAY` names another machine, or when a local display number gets no answer. So on Linux the desktop app links no D-Bus client crate, and it starts only if `DISPLAY` is unset or names a local display whose X server answers on its local socket (D104, D105, D109). On Linux, CI runs defined CLI and GUI scenarios under strace in an empty network namespace and fails if any non-local socket is opened. This tests those scenarios; it does not prove every possible code path. Windows has no runtime audit in CI. This is the exact claim the README may make, and nothing stronger (D107).
 2. The user's input folder is never modified.
 3. Secret values never leave the encrypted vault except into the restore output and Text Mode (§6.3).
 4. Secure defaults: when in doubt, exclude and report.
@@ -37,7 +37,7 @@ scripts/check-offline.sh, scripts/check-test-ids.sh, scripts/net-audit.sh
   - `NAME` is the key name, or the rule id if there is no key name. Uppercase it, map every character outside `[A-Z0-9]` to `_`, collapse runs of `_`, trim leading/trailing `_`, truncate to 24 characters. If the result is empty, use `SECRET`.
   - `HEX8` is 8 lowercase hex characters from 4 bytes of OS randomness (`getrandom`). It **must contain at least one letter `a`–`f`**; regenerate if not (D4).
 - Matching regex: `VEILCODE_[A-Z0-9_]{1,24}_[0-9a-f]{8}` (no `\b`). The **whole match** is the vault lookup key.
-  - NAME never contains lowercase letters and HEX8 always does, so a match always equals the original token, whatever bytes sit next to it.
+  - NAME never contains lowercase letters and HEX8 always does, so the bytes after a token cannot change its match. The bytes before it can: text ending in `VEILCODE_[A-Z0-9_]*` directly before a token can make the leftmost match swallow it, which restore handles by trying every `VEILCODE_` offset (D29).
 - The same secret value always maps to the same token (dedupe within the vault). The NAME comes from the first occurrence.
 - If a generated token already exists in the vault, or already appears in any input file, regenerate it.
 
@@ -199,7 +199,7 @@ Every write path must be checked: the joined output path must stay under the out
 | regex, serde, serde_json, toml, walkdir, globset, sha2, thiserror, directories | core | logic |
 | chacha20poly1305, argon2, getrandom, zeroize | core | crypto (check enabled features in docs for the locked version) |
 | clap (derive), rpassword, anyhow | cli | CLI |
-| eframe (**`default-features = false`**; enable only: a renderer, `default_fonts`, `x11`, `wayland`, `accesskit`; plus clipboard support if it is a separate feature at the locked version), egui-file-dialog, anyhow | gui | native GUI, in-process file picker |
+| eframe (**`default-features = false`**; enable only: `glow` (D96), `default_fonts`, `x11`, `wayland`, plus `accesskit` on non-Linux targets only (D104: no D-Bus on Linux); clipboard is built in (D98)), egui-file-dialog, anyhow | gui | native GUI, in-process file picker |
 | proptest, tempfile | dev | tests |
 
 **Forbidden eframe/egui features:** `links` (opens the system browser) and `persistence` (writes UI state to disk). Also forbidden: any image or font loader that fetches URLs.
@@ -218,7 +218,7 @@ Every write path must be checked: the joined output path must stay under the out
 3. **Runtime syscall audit** (`scripts/net-audit.sh`, Linux CI):
    - Run the CLI end-to-end (scan → mask → restore) under `strace -f -e trace=socket,connect`.
    - Run the GUI under `xvfb-run` for 10 s, also under strace.
-   - Fail on any `socket(AF_INET|AF_INET6|AF_PACKET|AF_NETLINK, …)`. `AF_UNIX` (display server, accessibility bus) is allowed.
+   - Fail on any `socket()` or `connect()` with a family other than `AF_UNIX` (stricter than an AF_INET/AF_INET6/AF_PACKET/AF_NETLINK deny list), on `io_uring_setup`, and on any `execve` after the first. On Linux, `AF_UNIX` here means the display server (X11 or Wayland); the GUI links no D-Bus client crate on Linux (D104).
    - If a forbidden family appears, stop and report; do not allow-list it quietly.
 4. **GUI hardening:** no webview, no HTML, no hyperlinks, no URL opening, in-process file picker only, persistence disabled. Secret values appear only in the Text Mode widgets; all other views hold previews.
 5. Windows has no strace equivalent in CI. Manual verification is documented in VERIFY_OFFLINE.md (firewall outbound block plus Resource Monitor / Wireshark).

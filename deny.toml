@@ -26,6 +26,13 @@ allow = [
     "Apache-2.0",
     # unicode-ident, via proc-macro2 <- serde_derive/thiserror-impl/zeroize_derive
     "Unicode-3.0",
+    # D101 (P6 GUI graph), from `cargo deny check licenses` on 2026-10-14:
+    # clipboard-win 5.4.1 and error-code 3.4.0 (Windows clipboard via arboard)
+    "BSL-1.0",
+    # libloading 0.8.9 (dlopen of X11/Wayland/GL libraries)
+    "ISC",
+    # foldhash 0.2.0 (via hashbrown <- accesskit, indexmap)
+    "Zlib",
 ]
 confidence-threshold = 0.8
 
@@ -35,6 +42,13 @@ confidence-threshold = 0.8
 [[licenses.exceptions]]
 crate = "option-ext"
 allow = ["MPL-2.0"]
+
+# D101: epaint_default_fonts embeds the egui default fonts (Hack, Noto Emoji,
+# Ubuntu-Light, emoji-icon-font). The font licences are allowed for this one
+# crate only; licence texts are in THIRD_PARTY_NOTICES.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
 
 [bans]
 multiple-versions = "warn"

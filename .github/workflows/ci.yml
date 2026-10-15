@@ -18,7 +18,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45  # P6: plus a release (lto = "fat") GUI build
     # Zero-warnings rule for every build in this job.
     env:
       RUSTFLAGS: -D warnings
@@ -42,6 +42,12 @@ jobs:
       - name: test
         shell: bash
         run: cargo test --locked --workspace
+      # PLAN P6 acceptance: the GUI release build on all 3 OS. No system
+      # packages are needed to build it (VERIFY_LOG 2026-10-14: eframe/glow
+      # dlopens X11/Wayland/GL at run time; links only libgcc_s, libm, libc).
+      - name: build veilcode-gui (release)
+        shell: bash
+        run: cargo build --release --locked -p veilcode-gui
       - name: check-offline
         shell: bash
         run: bash scripts/check-offline.sh
@@ -80,9 +86,19 @@ jobs:
       - name: install pinned toolchain (rustup, D95)
         shell: bash
         run: rustup toolchain install --no-self-update && rustup show active-toolchain
-      - name: install strace
+      # strace + util-linux for the audit; xvfb plus the runtime-only libraries
+      # the glow GUI dlopens on X11 (and Wayland), per VERIFY_LOG 2026-10-14
+      # and D100. No -dev packages. The Vulkan packages are left out: they are
+      # only used by the wgpu renderer, and D96 chose glow.
+      - name: install strace, xvfb and GUI runtime libraries
         shell: bash
-        run: sudo apt-get update && sudo apt-get install -y strace util-linux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace util-linux xvfb \
+            libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0 \
+            libx11-6 libx11-xcb1 libxcursor1 libxi6 libxrandr2 \
+            libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0
+      # CLI scenarios (C9) and the GUI under xvfb-run for 10 s (G6).
       - name: net-audit
         shell: bash
         run: bash scripts/net-audit.sh
