@@ -12,17 +12,44 @@ real secrets while experimenting, and never paste secret values into commands.
 ## 1. Check the release files
 
 Each GitHub release has these files (`<tag>` is the release tag, for example
-`v0.1.0`):
+`v0.2.0`). Releases up to `v0.1.0-rc2` contain only the four CLI files below
+plus `SHA256SUMS`.
+
+**Command-line tool (CLI)**
 
 | File | What it is |
 |---|---|
-| `veilcode-<tag>-x86_64-unknown-linux-musl` | Linux x86_64 binary (static) |
-| `veilcode-<tag>-x86_64-pc-windows-msvc.exe` | Windows x86_64 binary |
-| `veilcode-<tag>-x86_64-unknown-linux-musl.cdx.json` | CycloneDX SBOM of the Linux binary |
-| `veilcode-<tag>-x86_64-pc-windows-msvc.cdx.json` | CycloneDX SBOM of the Windows binary |
-| `SHA256SUMS` | SHA-256 checksums |
+| `veilcode-<tag>-x86_64-unknown-linux-musl` | Linux x86_64 CLI binary (static) |
+| `veilcode-<tag>-x86_64-pc-windows-msvc.exe` | Windows x86_64 CLI binary |
+| `veilcode-<tag>-x86_64-unknown-linux-musl.cdx.json` | CycloneDX SBOM of the Linux CLI |
+| `veilcode-<tag>-x86_64-pc-windows-msvc.cdx.json` | CycloneDX SBOM of the Windows CLI |
 
-Build-provenance attestations for the binaries and the SBOMs are stored by
+**Desktop app (from v0.2.0)**
+
+| File | What it is |
+|---|---|
+| `veilcode-gui-<tag>-x86_64-unknown-linux-gnu` | Linux x86_64 GUI binary (needs glibc and X11/Wayland libraries) |
+| `veilcode-gui-<tag>-x86_64-pc-windows-msvc.exe` | Windows x86_64 GUI binary |
+| `veilcode-gui-<tag>-x86_64-unknown-linux-gnu.cdx.json` | CycloneDX SBOM of the Linux GUI (see the note below) |
+| `veilcode-gui-<tag>-x86_64-pc-windows-msvc.cdx.json` | CycloneDX SBOM of the Windows GUI |
+| `veilcode-<tag>-amd64.deb` | Debian/Ubuntu package with the CLI, the GUI, a desktop entry and the licences |
+| `veilcode-<tag>-x86_64-linux.tar.gz` | The same Linux files as a plain archive |
+| `veilcode-<tag>-x86_64-windows.msi` | Windows per-user installer (CLI, GUI, Start-menu shortcut; no admin needed) |
+| `veilcode-<tag>-x86_64-windows.zip` | The same Windows files as a portable archive |
+
+That is 12 files from v0.2.0 on. Every release also has `SHA256SUMS`: the
+SHA-256 checksums of every file above. `SHA256SUMS` itself is not attested;
+it is checked against the attested files.
+
+**Note on the Linux GUI SBOM (D119):** it lists 12 crates, among them zbus,
+atspi and accesskit_unix, that the Linux build does not compile. The likely
+cause is that the SBOM tool merges features across platforms; this has not
+been confirmed. Over-listing never hides a component. To see exactly what the
+Linux GUI contains, run
+`cargo tree --locked -e normal -p veilcode-gui --target x86_64-unknown-linux-gnu`
+in the source tree at the release tag.
+
+Build-provenance attestations for all 12 files (binaries, packages and SBOMs) are stored by
 GitHub and checked with `gh` (below). Download the files into one folder and
 verify them **before** renaming anything. Below, `<file>` stands for one of the
 file names above.

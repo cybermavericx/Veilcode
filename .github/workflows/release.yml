@@ -1,13 +1,17 @@
-# Release workflow (PLAN P5; D90-D93). Pushing a v* tag runs:
-#   build   (matrix, read-only)  -> veilcode binaries for Linux musl + Windows MSVC
-#   sbom    (read-only)          -> one CycloneDX SBOM per target
-#   release (needs both; the only job that can write) -> SHA256SUMS, provenance
+# Release workflow (PLAN P5, P7; D90-D95, D111-D115). Pushing a v* tag runs:
+#   build            (matrix, read-only) -> CLI musl, GUI gnu, CLI+GUI msvc binaries
+#   sbom             (read-only)         -> one CycloneDX SBOM per binary and target
+#   package-linux    (read-only, needs build) -> .deb (cargo-deb) and .tar.gz
+#   package-windows  (read-only, needs build) -> per-user .msi (WiX 3) and .zip
+#   release (needs all; the only job that can write) -> SHA256SUMS, provenance
 #           attestation and a DRAFT release for the maintainer to publish by hand.
 # The release job runs no third-party build code (no toolchain, no cargo
-# install): it only checks, hashes, attests and uploads files made elsewhere.
-# Every action is pinned by full commit SHA; tag, inputs and lookup URL are in
-# docs/VERIFY_LOG.md. The tag name only ever reaches shell code through env
-# (TAG), never via an expression inside run:.
+# install, no packager): it only checks, hashes, attests and uploads files made
+# elsewhere. It takes each artifact by exact name, keeps only the expected
+# files, and re-checks the .deb/.tar.gz binaries with dpkg-deb, tar and cmp
+# (D120). Every job with a checkout checks the tag against the crate version (D121). Every action is pinned by full commit SHA; tag, inputs and lookup
+# URL are in docs/VERIFY_LOG.md. The tag name only ever reaches shell code
+# through env (TAG), never via an expression inside run:.
 name: release
 
 on:
@@ -31,21 +35,34 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        target: [x86_64-unknown-linux-musl, x86_64-pc-windows-msvc]
+        target: [x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc]
         include:
           # D91: ubuntu-24.04 pinned (ubuntu-latest moves to 26.04 in Nov 2026).
+          # CLI only: a static musl binary.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             exe: ''
+            packages: '-p veilcode-cli'
+            bins: 'veilcode'
+          # D112: the GUI needs glibc on Linux (it dlopens X11/GL/Wayland).
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            exe: ''
+            packages: '-p veilcode-gui'
+            bins: 'veilcode-gui'
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             exe: '.exe'
+            packages: '-p veilcode-cli -p veilcode-gui'
+            bins: 'veilcode veilcode-gui'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       TAG: ${{ github.ref_name }}
       TARGET: ${{ matrix.target }}
       EXE: ${{ matrix.exe }}
+      PACKAGES: ${{ matrix.packages }}
+      BINS: ${{ matrix.bins }}
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,8 +75,6 @@ jobs:
       # the v0.1.0-rc1 run). No third-party setup action, no cache (D95).
       - name: install pinned toolchain
         shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
         run: |
           rustup toolchain install --no-self-update
           rustup target add "$TARGET"
@@ -98,29 +113,47 @@ jobs:
           echo "CARGO_HOME_RESOLVED=$cargo_home" >> "$GITHUB_ENV"
       - name: build
         shell: bash
-        run: cargo build --release --locked -p veilcode-cli --target "$TARGET"
+        # $PACKAGES is deliberately unquoted: it holds one or two "-p <crate>" pairs
+        # from the matrix above (no untrusted input).
+        run: cargo build --release --locked $PACKAGES --target "$TARGET"
       - name: stage and smoke-test
         shell: bash
         run: |
           mkdir -p dist
-          out="dist/veilcode-$TAG-$TARGET$EXE"
-          cp "target/$TARGET/release/veilcode$EXE" "$out"
-          version=$("./$out" --version)
-          echo "$version"
-          case "$version" in
-            'veilcode '*) ;;
-            *) echo "unexpected --version output" >&2; exit 1 ;;
-          esac
+          for bin in $BINS; do
+            out="dist/$bin-$TAG-$TARGET$EXE"
+            cp "target/$TARGET/release/$bin$EXE" "$out"
+          done
+          # Only the CLI has --version; the GUI would try to open a window.
+          if [ -f "dist/veilcode-$TAG-$TARGET$EXE" ]; then
+            version=$("./dist/veilcode-$TAG-$TARGET$EXE" --version)
+            echo "$version"
+            case "$version" in
+              'veilcode '*) ;;
+              *) echo "unexpected --version output" >&2; exit 1 ;;
+            esac
+          fi
           ls -l dist
+      - name: check the tag matches the workspace version (D121)
+        shell: bash
+        run: |
+          set -- "$(cargo pkgid -p veilcode-cli)" "$(cargo pkgid -p veilcode-gui)"
+          if [ -f "dist/veilcode-$TAG-$TARGET$EXE" ]; then
+            set -- "$@" "$("./dist/veilcode-$TAG-$TARGET$EXE" --version)"
+          fi
+          bash scripts/check-version.sh "$TAG" "$@"
       # Also covers the MSVC PDB path: the linker writes it, not rustc, so
-      # --remap-path-prefix may not reach it.
+      # --remap-path-prefix may not reach it. Every shipped binary is checked.
       - name: check build paths did not leak (D92)
         shell: bash
-        run: bash scripts/check-path-leak.sh "dist/veilcode-$TAG-$TARGET$EXE" "$GITHUB_WORKSPACE" "$CARGO_HOME_RESOLVED"
+        run: |
+          for bin in $BINS; do
+            bash scripts/check-path-leak.sh "dist/$bin-$TAG-$TARGET$EXE" "$GITHUB_WORKSPACE" "$CARGO_HOME_RESOLVED"
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-${{ matrix.target }}
-          path: dist/veilcode-*
+          path: dist/veilcode*
           if-no-files-found: error
           retention-days: 3
 
@@ -150,6 +183,8 @@ jobs:
           case "$TAG" in
             *[!A-Za-z0-9._-]*) echo "tag '$TAG' has unexpected characters" >&2; exit 1 ;;
           esac
+          # D121: the SBOMs must describe the version being released.
+          bash scripts/check-version.sh "$TAG" "$(cargo pkgid -p veilcode-cli)" "$(cargo pkgid -p veilcode-gui)"
       # Built from crates.io source with its own lockfile (VERIFY_LOG 2026-10-13).
       - name: install cargo-cyclonedx
         shell: bash
@@ -172,6 +207,14 @@ jobs:
               --describe binaries --target "$t" --target-in-filename)
             mv "$scratch/crates/veilcode-cli/veilcode_bin_$t.cdx.json" "sbom/veilcode-$TAG-$t.cdx.json"
           done
+          # D117: the GUI too, for its two release targets; named like its binaries.
+          for t in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            (cd "$scratch" && cargo cyclonedx \
+              --manifest-path crates/veilcode-gui/Cargo.toml \
+              --format json --spec-version 1.5 \
+              --describe binaries --target "$t" --target-in-filename)
+            mv "$scratch/crates/veilcode-gui/veilcode-gui_bin_$t.cdx.json" "sbom/veilcode-gui-$TAG-$t.cdx.json"
+          done
           # The SBOM must describe the locked graph: fail if the tool touched the lockfile.
           cmp Cargo.lock "$scratch/Cargo.lock"
           ls -l sbom
@@ -188,13 +231,258 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-sbom
-          path: sbom/veilcode-*.cdx.json
+          path: sbom/veilcode*.cdx.json
+          if-no-files-found: error
+          retention-days: 3
+
+  # D111, D114: .deb and .tar.gz from the attested build outputs (the GUI gnu
+  # and CLI musl binaries are packaged unmodified; check-deb.sh cmp's them).
+  # cargo-deb is third-party code, so this job is read-only like sbom.
+  package-linux:
+    name: package (linux)
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install pinned toolchain (rustup, D95)
+        shell: bash
+        run: rustup toolchain install --no-self-update && rustup show active-toolchain
+      - name: check tag name and derive the package version
+        shell: bash
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "tag '$TAG' does not look like v<version>" >&2; exit 1 ;;
+          esac
+          # Debian upstream_version allows alphanumerics and . + - ~ (Policy
+          # 5.6.12); '_' is not allowed, so the tag charset here has no '_'.
+          case "$TAG" in
+            *[!A-Za-z0-9.-]*) echo "tag '$TAG' has unexpected characters" >&2; exit 1 ;;
+          esac
+          # v0.2.0 -> 0.2.0-1; v0.2.0-rc1 -> 0.2.0~rc1-1 ('~' sorts before the
+          # final release, Policy 5.6.12).
+          v=${TAG#v}
+          deb_version="$(printf '%s' "$v" | sed 's/-/~/')-1"
+          echo "DEB_VERSION=$deb_version"
+          echo "DEB_VERSION=$deb_version" >> "$GITHUB_ENV"
+      # Built from crates.io source with its own lockfile (VERIFY_LOG 2026-10-15).
+      - name: install cargo-deb
+        shell: bash
+        run: cargo install --locked cargo-deb@3.8.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-x86_64-unknown-linux-*
+          merge-multiple: true
+          path: bin
+      - name: check the tag matches the workspace version (D121)
+        shell: bash
+        run: |
+          cli="bin/veilcode-$TAG-x86_64-unknown-linux-musl"
+          chmod 755 "$cli"
+          bash scripts/check-version.sh "$TAG" "$(cargo pkgid -p veilcode-cli)" \
+            "$(cargo pkgid -p veilcode-gui)" "$("./$cli" --version)"
+      - name: build the .deb (cargo deb --no-build)
+        shell: bash
+        run: |
+          gui="bin/veilcode-gui-$TAG-x86_64-unknown-linux-gnu"
+          cli="bin/veilcode-$TAG-x86_64-unknown-linux-musl"
+          # cargo-deb maps the special `target/release/` asset prefix to
+          # <CARGO_TARGET_DIR>/<triple>/release with --target, so the downloaded
+          # binaries are placed there under their plain names. The CLI is the
+          # static musl build, staged in the gnu directory on purpose: the .deb
+          # ships the same bytes as the standalone attested asset.
+          stage="$RUNNER_TEMP/deb-target"
+          mkdir -p "$stage/x86_64-unknown-linux-gnu/release" dist
+          cp "$gui" "$stage/x86_64-unknown-linux-gnu/release/veilcode-gui"
+          cp "$cli" "$stage/x86_64-unknown-linux-gnu/release/veilcode"
+          chmod 755 "$stage"/x86_64-unknown-linux-gnu/release/*
+          # Entry mtimes from the tagged commit (cargo-deb reads SOURCE_DATE_EPOCH).
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          CARGO_TARGET_DIR="$stage" cargo deb --no-build --no-strip --locked \
+            -p veilcode-gui --target x86_64-unknown-linux-gnu \
+            --deb-version "$DEB_VERSION" -o "dist/veilcode-$TAG-amd64.deb"
+          git diff --exit-code
+      - name: PKG1 .deb contents and metadata
+        shell: bash
+        run: |
+          deb="dist/veilcode-$TAG-amd64.deb"
+          dpkg-deb -I "$deb"
+          dpkg-deb -c "$deb"
+          bash scripts/check-deb.sh "$deb" \
+            "bin/veilcode-gui-$TAG-x86_64-unknown-linux-gnu" \
+            "bin/veilcode-$TAG-x86_64-unknown-linux-musl"
+      - name: build the .tar.gz
+        shell: bash
+        run: |
+          name="veilcode-$TAG-x86_64-linux"
+          root="$RUNNER_TEMP/tar/$name"
+          mkdir -p "$root"
+          cp "bin/veilcode-gui-$TAG-x86_64-unknown-linux-gnu" "$root/veilcode-gui"
+          cp "bin/veilcode-$TAG-x86_64-unknown-linux-musl" "$root/veilcode"
+          chmod 755 "$root/veilcode-gui" "$root/veilcode"
+          cp packaging/linux/veilcode.desktop LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES README.md "$root/"
+          chmod 644 "$root/veilcode.desktop" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/THIRD_PARTY_NOTICES" "$root/README.md"
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          # GNU tar: sorted names, fixed owner and mtime; gzip -n drops the
+          # gzip name and timestamp.
+          tar -C "$RUNNER_TEMP/tar" --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@$SOURCE_DATE_EPOCH" -cf - "$name" | gzip -n -9 > "dist/$name.tar.gz"
+          tar -tvzf "dist/$name.tar.gz"
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-linux-packages
+          path: |
+            dist/veilcode-*.deb
+            dist/veilcode-*.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  # D111, D113: per-user .msi from packaging/windows/veilcode.wxs with the WiX 3
+  # preinstalled on the runner image (no download), plus the portable .zip.
+  package-windows:
+    name: package (windows)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+      # Must match packaging/windows/veilcode.wxs; generated once, never changed (D113).
+      UPGRADE_CODE: 9BAD5B61-2466-4D7C-96DF-1FB5DAC739BF
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: check tag name and derive the MSI version
+        shell: bash
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "tag '$TAG' does not look like v<version>" >&2; exit 1 ;;
+          esac
+          case "$TAG" in
+            *[!A-Za-z0-9._-]*) echo "tag '$TAG' has unexpected characters" >&2; exit 1 ;;
+          esac
+          # MSI ProductVersion is major.minor.build, at most 255.255.65535:
+          # strip the 'v' and any '-rcN' suffix.
+          core=${TAG#v}
+          core=${core%%-*}
+          case "$core" in
+            *[!0-9.]*|*..*|.*|*.) echo "version '$core' is not numeric x.y.z" >&2; exit 1 ;;
+          esac
+          # $core holds only digits and dots here, so the unquoted split is safe.
+          old_ifs=$IFS; IFS=.; set -- $core; IFS=$old_ifs
+          # D121: reject components longer than 5 digits before -gt, so a huge
+          # number cannot overflow the shell's integer comparison.
+          for c in "$@"; do
+            case "$c" in
+              ''|??????*) echo "version component '$c' is empty or longer than 5 digits" >&2; exit 1 ;;
+            esac
+          done
+          if [ "$#" -ne 3 ] || [ "$1" -gt 255 ] || [ "$2" -gt 255 ] || [ "$3" -gt 65535 ]; then
+            echo "version '$core' is not a valid MSI x.y.z" >&2; exit 1
+          fi
+          echo "MSI_VERSION=$core"
+          echo "MSI_VERSION=$core" >> "$GITHUB_ENV"
+      - name: check WiX is 3.14.1.8722 (D111)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WIX) { throw 'WIX environment variable is not set' }
+          foreach ($tool in 'candle.exe', 'light.exe') {
+            $path = Join-Path $env:WIX "bin\$tool"
+            if (-not (Test-Path -LiteralPath $path)) { throw "missing $path" }
+            $vi = (Get-Item -LiteralPath $path).VersionInfo
+            $v = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
+            Write-Output "$path file version $v"
+            if ($v -ne '3.14.1.8722') { throw "$tool is $v, want 3.14.1.8722" }
+          }
+          & (Join-Path $env:WIX 'bin\candle.exe') -? | Select-Object -First 3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-x86_64-pc-windows-msvc
+          path: bin
+      # D121. No Rust toolchain in this job, so the CLI's --version is the source.
+      - name: check the tag matches the workspace version (D121)
+        shell: bash
+        run: bash scripts/check-version.sh "$TAG" "$("./bin/veilcode-$TAG-x86_64-pc-windows-msvc.exe" --version)"
+      - name: build the .msi (candle + light)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'msi-bin'
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item -LiteralPath "bin\veilcode-$env:TAG-x86_64-pc-windows-msvc.exe" -Destination "$stage\veilcode.exe"
+          Copy-Item -LiteralPath "bin\veilcode-gui-$env:TAG-x86_64-pc-windows-msvc.exe" -Destination "$stage\veilcode-gui.exe"
+          $obj = Join-Path $env:RUNNER_TEMP 'veilcode.wixobj'
+          $msi = "dist\veilcode-$env:TAG-x86_64-windows.msi"
+          & (Join-Path $env:WIX 'bin\candle.exe') -nologo -arch x64 "-dVersion=$env:MSI_VERSION" "-dBinDir=$stage" "-dSrcDir=$env:GITHUB_WORKSPACE" -out $obj packaging\windows\veilcode.wxs
+          if ($LASTEXITCODE -ne 0) { throw "candle failed ($LASTEXITCODE)" }
+          # light runs the ICE validation by default (not suppressed).
+          & (Join-Path $env:WIX 'bin\light.exe') -nologo -spdb -out $msi $obj
+          if ($LASTEXITCODE -ne 0) { throw "light failed ($LASTEXITCODE)" }
+          Get-Item -LiteralPath $msi | Format-List Name, Length
+      - name: PKG2 .msi contents and per-user scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wxs = Get-Content -Raw -LiteralPath packaging\windows\veilcode.wxs
+          if ($wxs -notmatch 'InstallScope="perUser"') { throw '.wxs does not declare InstallScope="perUser"' }
+          if ($wxs -notmatch "UpgradeCode=`"$env:UPGRADE_CODE`"") { throw ".wxs UpgradeCode is not $env:UPGRADE_CODE" }
+          # Administrative extract: unpacks the files, installs nothing.
+          $msi = (Resolve-Path "dist\veilcode-$env:TAG-x86_64-windows.msi").Path
+          $out = Join-Path $env:RUNNER_TEMP 'msi-extract'
+          $log = Join-Path $env:RUNNER_TEMP 'msi-extract.log'
+          if ("$msi$out$log" -match ' ') { throw 'path with a space' }
+          $p = Start-Process -FilePath msiexec.exe -ArgumentList "/a $msi /qn TARGETDIR=$out /l*v $log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 40; throw "msiexec /a exit $($p.ExitCode)" }
+          # The admin image also holds a copy of the .msi itself; ignore it.
+          $files = Get-ChildItem -LiteralPath $out -Recurse -File | Where-Object { $_.Extension -ne '.msi' }
+          $files | ForEach-Object { Write-Output $_.FullName }
+          $want = @{
+            'veilcode.exe'        = "$env:RUNNER_TEMP\msi-bin\veilcode.exe"
+            'veilcode-gui.exe'    = "$env:RUNNER_TEMP\msi-bin\veilcode-gui.exe"
+            'LICENSE-MIT'         = 'LICENSE-MIT'
+            'LICENSE-APACHE'      = 'LICENSE-APACHE'
+            'THIRD_PARTY_NOTICES' = 'THIRD_PARTY_NOTICES'
+          }
+          $got = @($files | ForEach-Object { $_.Name } | Sort-Object)
+          $exp = @($want.Keys | Sort-Object)
+          if (($got -join '|') -cne ($exp -join '|')) { throw "extracted files: $($got -join ', '); want: $($exp -join ', ')" }
+          foreach ($f in $files) {
+            $a = (Get-FileHash -LiteralPath $f.FullName).Hash
+            $b = (Get-FileHash -LiteralPath $want[$f.Name]).Hash
+            if ($a -ne $b) { throw "$($f.Name) in the .msi differs from the build output" }
+            Write-Output "$($f.Name) $a OK"
+          }
+      - name: build the portable .zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "veilcode-$env:TAG-x86_64-windows"
+          $root = Join-Path $env:RUNNER_TEMP "zip\$name"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP\msi-bin\veilcode.exe", "$env:RUNNER_TEMP\msi-bin\veilcode-gui.exe", LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY_NOTICES, README.md -Destination $root
+          Compress-Archive -LiteralPath $root -DestinationPath "dist\$name.zip"
+          Get-ChildItem dist | Format-Table Name, Length
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-windows-packages
+          path: |
+            dist/veilcode-*.msi
+            dist/veilcode-*.zip
           if-no-files-found: error
           retention-days: 3
 
   release:
     name: draft release
-    needs: [build, sbom]
+    needs: [build, sbom, package-linux, package-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Protected environment: the maintainer must approve each run before this
@@ -213,24 +501,101 @@ jobs:
       REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
     # No checkout: nothing from the repo runs here.
     steps:
-      # build-* matches the two binaries and build-sbom; merge-multiple puts
-      # every file straight into dist/.
+      # D120: each expected artifact by exact name into its own directory (no
+      # pattern, no merge-multiple). Only the expected file names are then
+      # copied into dist/; anything else in art/ never reaches dist/.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: build-*
-          merge-multiple: true
-          path: dist
+          name: build-x86_64-unknown-linux-musl
+          path: art/build-x86_64-unknown-linux-musl
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-x86_64-unknown-linux-gnu
+          path: art/build-x86_64-unknown-linux-gnu
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-x86_64-pc-windows-msvc
+          path: art/build-x86_64-pc-windows-msvc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-sbom
+          path: art/build-sbom
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-linux-packages
+          path: art/build-linux-packages
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build-windows-packages
+          path: art/build-windows-packages
+      - name: copy the expected files into dist/ (D120)
+        shell: bash
+        run: |
+          # "<artifact> <file>" pairs; the file must be a regular file (no symlink).
+          pairs="build-x86_64-unknown-linux-musl veilcode-$TAG-x86_64-unknown-linux-musl
+          build-x86_64-unknown-linux-gnu veilcode-gui-$TAG-x86_64-unknown-linux-gnu
+          build-x86_64-pc-windows-msvc veilcode-$TAG-x86_64-pc-windows-msvc.exe
+          build-x86_64-pc-windows-msvc veilcode-gui-$TAG-x86_64-pc-windows-msvc.exe
+          build-sbom veilcode-$TAG-x86_64-unknown-linux-musl.cdx.json
+          build-sbom veilcode-$TAG-x86_64-pc-windows-msvc.cdx.json
+          build-sbom veilcode-gui-$TAG-x86_64-unknown-linux-gnu.cdx.json
+          build-sbom veilcode-gui-$TAG-x86_64-pc-windows-msvc.cdx.json
+          build-linux-packages veilcode-$TAG-amd64.deb
+          build-linux-packages veilcode-$TAG-x86_64-linux.tar.gz
+          build-windows-packages veilcode-$TAG-x86_64-windows.msi
+          build-windows-packages veilcode-$TAG-x86_64-windows.zip"
+          mkdir dist
+          printf '%s\n' "$pairs" | while read -r art file; do
+            src="art/$art/$file"
+            if [ ! -f "$src" ] || [ -L "$src" ]; then
+              echo "missing or not a regular file: $src" >&2
+              exit 1
+            fi
+            cp -- "$src" "dist/$file"
+          done
+          ls -lA dist
+      # D120: the packages must contain exactly the build-job binaries. Image
+      # tools only (dpkg-deb, tar, cmp); nothing from the packages is executed.
+      - name: re-verify the .deb and .tar.gz binaries (D120)
+        shell: bash
+        run: |
+          cli="dist/veilcode-$TAG-x86_64-unknown-linux-musl"
+          gui="dist/veilcode-gui-$TAG-x86_64-unknown-linux-gnu"
+          x="$RUNNER_TEMP/reverify"
+          mkdir -p "$x/deb" "$x/tar"
+          dpkg-deb -x "dist/veilcode-$TAG-amd64.deb" "$x/deb"
+          tar -xzf "dist/veilcode-$TAG-x86_64-linux.tar.gz" -C "$x/tar"
+          t="$x/tar/veilcode-$TAG-x86_64-linux"
+          cmp -- "$x/deb/usr/bin/veilcode" "$cli"
+          cmp -- "$x/deb/usr/bin/veilcode-gui" "$gui"
+          cmp -- "$t/veilcode" "$cli"
+          cmp -- "$t/veilcode-gui" "$gui"
+          # D121 in this job: the packaged version matches the tag (control
+          # field only; nothing is run).
+          v=${TAG#v}
+          want="$(printf '%s' "$v" | sed 's/-/~/')-1"
+          got=$(dpkg-deb -f "dist/veilcode-$TAG-amd64.deb" Version)
+          [ "$got" = "$want" ] || { echo ".deb Version '$got', want '$want'" >&2; exit 1; }
+          echo "packages re-verified: 4 binaries identical, .deb Version $got"
       - name: check exact file set
         shell: bash
         env:
           WITH_SUMS: 'no'
         run: |
           # Exactly the expected files, nothing else (hidden files included).
-          # WITH_SUMS=yes once SHA256SUMS has been written.
-          expected="veilcode-$TAG-x86_64-pc-windows-msvc.cdx.json
+          # WITH_SUMS=yes once SHA256SUMS has been written. (D115, PKG3)
+          expected="veilcode-$TAG-amd64.deb
+          veilcode-$TAG-x86_64-linux.tar.gz
+          veilcode-$TAG-x86_64-pc-windows-msvc.cdx.json
           veilcode-$TAG-x86_64-pc-windows-msvc.exe
           veilcode-$TAG-x86_64-unknown-linux-musl
-          veilcode-$TAG-x86_64-unknown-linux-musl.cdx.json"
+          veilcode-$TAG-x86_64-unknown-linux-musl.cdx.json
+          veilcode-$TAG-x86_64-windows.msi
+          veilcode-$TAG-x86_64-windows.zip
+          veilcode-gui-$TAG-x86_64-pc-windows-msvc.cdx.json
+          veilcode-gui-$TAG-x86_64-pc-windows-msvc.exe
+          veilcode-gui-$TAG-x86_64-unknown-linux-gnu
+          veilcode-gui-$TAG-x86_64-unknown-linux-gnu.cdx.json"
           if [ "$WITH_SUMS" = yes ]; then
             expected="$expected
           SHA256SUMS"
@@ -251,11 +616,12 @@ jobs:
         run: |
           # Zipped artifacts drop file modes (upload-artifact README). Modes are
           # not part of the sha256, but users get a runnable file.
-          chmod 755 "dist/veilcode-$TAG-x86_64-unknown-linux-musl"
+          chmod 755 "dist/veilcode-$TAG-x86_64-unknown-linux-musl" "dist/veilcode-gui-$TAG-x86_64-unknown-linux-gnu"
           ls -lA dist
       - name: SHA256SUMS
         shell: bash
         run: |
+          # veilcode-* covers every asset above, veilcode-gui-* included.
           cd dist
           sha256sum veilcode-* > SHA256SUMS
           cat SHA256SUMS
@@ -266,11 +632,19 @@ jobs:
           WITH_SUMS: 'yes'
         run: |
           # Exactly the expected files, nothing else (hidden files included).
-          # WITH_SUMS=yes once SHA256SUMS has been written.
-          expected="veilcode-$TAG-x86_64-pc-windows-msvc.cdx.json
+          # WITH_SUMS=yes once SHA256SUMS has been written. (D115, PKG3)
+          expected="veilcode-$TAG-amd64.deb
+          veilcode-$TAG-x86_64-linux.tar.gz
+          veilcode-$TAG-x86_64-pc-windows-msvc.cdx.json
           veilcode-$TAG-x86_64-pc-windows-msvc.exe
           veilcode-$TAG-x86_64-unknown-linux-musl
-          veilcode-$TAG-x86_64-unknown-linux-musl.cdx.json"
+          veilcode-$TAG-x86_64-unknown-linux-musl.cdx.json
+          veilcode-$TAG-x86_64-windows.msi
+          veilcode-$TAG-x86_64-windows.zip
+          veilcode-gui-$TAG-x86_64-pc-windows-msvc.cdx.json
+          veilcode-gui-$TAG-x86_64-pc-windows-msvc.exe
+          veilcode-gui-$TAG-x86_64-unknown-linux-gnu
+          veilcode-gui-$TAG-x86_64-unknown-linux-gnu.cdx.json"
           if [ "$WITH_SUMS" = yes ]; then
             expected="$expected
           SHA256SUMS"
@@ -285,9 +659,14 @@ jobs:
             ls -lA dist >&2
             exit 1
           fi
+          # SHA256SUMS must list every asset (PKG3).
+          for f in $expected; do
+            [ "$f" = SHA256SUMS ] && continue
+            grep -q "  $f\$" dist/SHA256SUMS || { echo "SHA256SUMS lacks $f" >&2; exit 1; }
+          done
           echo "file set OK"
       # D90: actions/attest with an explicit subject (no implicit fallback).
-      # Subjects: both binaries and both SBOM files.
+      # Subjects: every asset (binaries, packages, 4 SBOMs), per D115 and D117.
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/veilcode-*

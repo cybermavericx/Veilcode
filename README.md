@@ -4,7 +4,8 @@ Developers paste server code into AI assistants, often including `.env` files
 and config secrets. Veilcode masks those secrets in a copy of a code folder with
 unique placeholders, keeps the real values in a local encrypted vault, and
 restores them after the AI work is done, even if the AI moved, renamed or edited
-the code. It is a CLI today; a native desktop app is planned.
+the code. It is a CLI today; a native desktop app ships with v0.2.0 (not yet
+released).
 
 - [Threat model](docs/THREAT_MODEL.md): what Veilcode protects against, and
   what it does not.
@@ -13,8 +14,9 @@ the code. It is a CLI today; a native desktop app is planned.
 
 ## Status
 
-**Pre-alpha.** v0.1.0 is the first release and contains the `veilcode` CLI
-only. The desktop app (`veilcode-gui`) is not released yet. Read
+**Pre-alpha.** The current release is the CLI pre-release `v0.1.0-rc2`; it
+contains the `veilcode` CLI only. The desktop app (`veilcode-gui`) ships in
+v0.2.0, which is not released yet. Read
 [Honest limitations](#honest-limitations) before relying on it for real
 secrets.
 
@@ -41,8 +43,9 @@ for exactly what is enforced and what is only tested.
 ## Supported platforms
 
 - Windows 10/11, x86_64
-- Linux, x86_64 (a static binary that does not depend on the distribution's C
-  library)
+- Linux, x86_64. The CLI is a static binary that does not depend on the
+  distribution's C library. The desktop app is not static: it needs glibc and
+  the X11 or Wayland and OpenGL runtime libraries (see below).
 
 macOS is built and tested in CI but not released.
 
@@ -76,6 +79,60 @@ macOS is built and tested in CI but not released.
 The binaries are **not code signed** yet (planned for a later version). On
 Windows, SmartScreen may warn when you start `veilcode.exe`; the checksum and
 attestation are how you check the file instead.
+
+### Running the CLI
+
+`veilcode` is a **command-line tool**: run it from PowerShell or a terminal.
+Double-clicking `veilcode.exe` only flashes a console window that closes
+straight away, because with no arguments it prints its help and exits.
+
+Windows (PowerShell), from the folder you downloaded to:
+
+```powershell
+cd $HOME\Downloads
+.\veilcode.exe --help
+```
+
+Linux, from the folder you downloaded to:
+
+```sh
+cd ~/Downloads
+./veilcode --help
+```
+
+To run it as plain `veilcode` from any folder, move it into a folder on your
+`PATH`.
+
+### Desktop app (from v0.2.0)
+
+**These files arrive with v0.2.0, which is not released yet.** Until then the
+releases contain the CLI only. From v0.2.0 the release page also offers:
+
+- **Windows:** a per-user `.msi` installer (no administrator rights needed; it
+  adds a Start-menu shortcut for the desktop app), or a portable `.zip` with
+  both `veilcode.exe` and `veilcode-gui.exe`. The installer does not add the
+  CLI to `PATH`; run it by its full path in the install folder. Both files are
+  unsigned, so SmartScreen may warn.
+- **Linux:** a `.deb` package, installed with
+  `sudo apt install ./veilcode-<tag>-amd64.deb` (for example
+  `veilcode-v0.2.0-amd64.deb`), or a `.tar.gz` with both binaries. On Linux the
+  desktop app is built for glibc (the CLI stays a static binary) and needs the
+  X11 or Wayland and OpenGL runtime libraries. The `.deb` declares them as
+  dependencies; with the `.tar.gz`, install them yourself. On Debian or Ubuntu,
+  CI installs: `libgl1 libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
+  libx11-6 libx11-xcb1 libxcursor1 libxi6 libxrandr2 libxkbcommon0
+  libxkbcommon-x11-0 libwayland-client0 libwayland-cursor0`.
+- On Linux the desktop app **refuses to start unless `DISPLAY` is unset**
+  (the Wayland path) **or names a local display** whose X server answers on
+  its local socket. A forwarded or remote `DISPLAY`, such as one set by SSH X
+  forwarding, is refused (D105, D109).
+- **No screen-reader support on Linux** in v0.2.0. The accessibility bridge is
+  built for Windows only, because the Linux one pulls in a D-Bus client that
+  can be pointed at a network address (D104).
+
+Verify every downloaded file (checksum and attestation) as described in
+[VERIFY_OFFLINE.md](docs/VERIFY_OFFLINE.md#1-check-the-release-files) before
+installing or extracting it.
 
 ## 60-second demo
 
@@ -225,6 +282,8 @@ Limits you should know about:
   AI's changes before you run or publish them.
 - **Binaries are unsigned** for now; Windows SmartScreen may warn.
 - **macOS is not released** (built and tested in CI only).
+- **The desktop app (from v0.2.0) has no screen-reader support on Linux**
+  (D104).
 - Veilcode does not protect against malware or other users with your
   privileges, a compromised build pipeline, or clipboard and backup tools
   copying restored secrets. See the [threat model](docs/THREAT_MODEL.md).

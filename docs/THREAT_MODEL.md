@@ -125,11 +125,22 @@ is encrypted, so a strong passphrase is the last line of defence (§11).
 - The gitleaks rules are vendored from a pinned release-tag commit with a
   recorded sha256 (THIRD_PARTY_NOTICES).
 - GitHub Actions are pinned to commit SHAs.
-- Each release ships `SHA256SUMS`, one CycloneDX SBOM per target and
-  build-provenance attestations (D90, D93), so you can check that a binary was
-  built by this repository's release workflow from a given tag (see
-  VERIFY_OFFLINE.md). The attestation proves which workflow file built it, not
-  that the workflow's content was reviewed.
+- Each release ships `SHA256SUMS`, one CycloneDX SBOM per binary and target,
+  and build-provenance attestations for all 12 assets (D90, D93, D115), so you
+  can check that a file was built by this repository's release workflow from a
+  given tag (see VERIFY_OFFLINE.md). `SHA256SUMS` itself is not attested; it is
+  checked against the attested files. The attestation proves which workflow
+  file produced a file, not that the workflow's content was reviewed. For the
+  SBOMs it proves only that the workflow produced them, not that the
+  third-party SBOM tool reported the dependencies honestly or completely (D120).
+- The release job takes each artifact by exact name and copies only the
+  expected file names into the release (D120). Before hashing and attesting it
+  extracts the `.deb` and `.tar.gz` with the runner's own `dpkg-deb` and `tar`
+  and checks that their binaries are byte-identical to the build-job binaries.
+  The `.msi` is not re-checked in the release job: its content check (an
+  administrative extract compared by hash with the build outputs) runs in the
+  read-only `package-windows` job, which uses only the runner image's WiX and
+  `msiexec`.
 - Release builds normalise embedded build paths (D92). The **Linux** build is
   byte-for-byte reproducible across machines: the v0.1.0-rc2 binary built by
   CI has the same sha256 as one built locally from the same commit, so anyone

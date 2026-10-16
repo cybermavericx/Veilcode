@@ -1,11 +1,45 @@
 [package]
 name = "veilcode-gui"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 publish = false
+description = "Offline secret masker for code folders shared with AI assistants"
+
+# Linux .deb (D111, D114), built by release.yml's package-linux job with
+# `cargo deb --no-build --target x86_64-unknown-linux-gnu`. Keys from the
+# cargo-deb 3.8.0 README (VERIFY_LOG 2026-10-15). `target/release/` is
+# cargo-deb's special prefix: it is replaced by <target-dir>/<triple>/release.
+# Other asset paths are relative to this crate's directory.
+[package.metadata.deb]
+name = "veilcode"
+maintainer = "Muhammed Noufal <muhammednoufal7@gmail.com>"
+copyright = "2026 Muhammed Noufal (Cybermavericx)"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """\
+Veilcode finds secrets (API keys, tokens, passwords) in a copy of a code \
+folder and replaces them with placeholders, so the copy can be shared with \
+an AI assistant. The real values are kept in an encrypted local vault and \
+are put back into the assistant's changed files afterwards. The package \
+contains the desktop app (veilcode-gui) and the command-line tool \
+(veilcode). Detection is best-effort: review the findings before sharing."""
+section = "utils"
+priority = "optional"
+# $auto: dpkg-shlibdeps adds libc6 at the version the binaries need. The rest
+# are the libraries the GUI dlopens at run time (X11, Wayland, GL/EGL), which
+# shlibdeps cannot see; the list is ci.yml's runtime set (VERIFY_LOG
+# 2026-10-14, D100) minus the test-only tools.
+depends = "$auto, libgl1, libgl1-mesa-dri, libglx-mesa0, libegl1, libegl-mesa0, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0"
+assets = [
+    ["target/release/veilcode-gui", "usr/bin/", "755"],
+    ["target/release/veilcode", "usr/bin/", "755"],
+    ["../../packaging/linux/veilcode.desktop", "usr/share/applications/", "644"],
+    ["../../LICENSE-MIT", "usr/share/doc/veilcode/", "644"],
+    ["../../LICENSE-APACHE", "usr/share/doc/veilcode/", "644"],
+    ["../../THIRD_PARTY_NOTICES", "usr/share/doc/veilcode/", "644"],
+]
 
 [[bin]]
 name = "veilcode-gui"
@@ -14,7 +48,7 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 egui-file-dialog = { version = "0.15.0", default-features = false }
-veilcode-core = { version = "0.1.0", path = "../veilcode-core" }
+veilcode-core = { version = "0.2.0", path = "../veilcode-core" }
 
 [lints]
 workspace = true
