@@ -4,7 +4,9 @@
 //! with the job and comes back with its result.
 
 use crate::idle::{IDLE_LIMIT_SECS, IdleTimer};
-use crate::viewmodel::{self, MaskView, RestoreView, ReviewView, SessionsView};
+use crate::viewmodel::{
+    self, MaskView, Progress, RestoreView, ResultCard, ReviewView, SessionsView, Step, WorkflowRail,
+};
 use crate::worker::{Job, Runner};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -154,8 +156,8 @@ enum VaultState {
 enum Done {
     Unlocked(usize),
     Scanned(PathBuf, ScanReport),
-    Masked(MaskReport, Option<PathBuf>),
-    Restored(RestoreReport),
+    Masked(MaskReport, PathBuf, Option<PathBuf>),
+    Restored(RestoreReport, PathBuf),
     Notice(String),
     TextMasked(String),
     TextRestored(String, RestoreReport),
@@ -175,6 +177,8 @@ struct ScanState {
     /// Non-ignored findings the user unticked.
     unticked: BTreeSet<String>,
     confirmed: bool,
+    /// This scan was masked (the rail shows Review and Mask done).
+    masked: bool,
 }
 
 impl ScanState {
@@ -429,14 +433,19 @@ impl AppState {
                 }
             }
             Done::Scanned(input, report) => self.apply_scan(input, report),
-            Done::Masked(r, vault) => {
+            Done::Masked(r, out, vault) => {
                 let vault = vault.map(|p| p.display().to_string());
-                self.mask_result = Some(viewmodel::mask_view(&r, vault));
+                let out = out.display().to_string();
+                self.mask_result = Some(viewmodel::mask_view(&r, out, vault));
                 if let Some(scan) = &mut self.scan {
                     scan.confirmed = false;
+                    scan.masked = true;
                 }
             }
-            Done::Restored(r) => self.restore_result = Some(viewmodel::restore_view(&r)),
+            Done::Restored(r, out) => {
+                let out = Some(out.display().to_string());
+                self.restore_result = Some(viewmodel::restore_view(&r, out));
+            }
             Done::Notice(msg) => self.notice = Some(msg),
             Done::TextMasked(text) => self.set_text_output(text, None),
             Done::TextRestored(text, r) => self.set_text_output(text, Some(&r)),
@@ -454,13 +463,14 @@ impl AppState {
             report,
             unticked,
             confirmed: false,
+            masked: false,
         });
     }
 
     fn set_text_output(&mut self, text: String, report: Option<&RestoreReport>) {
         wipe_string(std::mem::replace(&mut self.text.output, text));
         self.text.output_restored = report.is_some();
-        self.text_report = report.map(viewmodel::restore_view);
+        self.text_report = report.map(|r| viewmodel::restore_view(r, None));
     }
 
     /// The review model of the current scan.
@@ -736,7 +746,8 @@ impl AppState {
         self.run_vault(move |v| {
             let p = Profile::load(&profile)?;
             let r = veilcode_core::restore(&input, &out, v, session.as_ref(), keep, &p);
-            r.map(Done::Restored).map_err(|e| forget_error(e, &vault))
+            r.map(|r| Done::Restored(r, out))
+                .map_err(|e| forget_error(e, &vault))
         })
     }
 
@@ -920,7 +931,7 @@ impl MaskJob {
             v,
             &self.opts,
         )?;
-        Ok(Done::Masked(r, separate))
+        Ok(Done::Masked(r, self.out, separate))
     }
 
     /// Masks into a separate per-project vault, opened or created here.
@@ -963,10 +974,65 @@ impl AppState {
         }
     }
 
+    /// The step rail (D131).
+    pub fn rail(&self) -> WorkflowRail {
+        let scan = self.scan.as_ref();
+        viewmodel::workflow_rail(&Progress {
+            unlocked: self.is_unlocked(),
+            scanned: scan.is_some(),
+            confirmed: scan.is_some_and(|s| s.confirmed),
+            masked: scan.is_some_and(|s| s.masked),
+            restored: self.restore_result.is_some(),
+        })
+    }
+
+    /// The card after the current scan.
+    pub fn scan_card(&self) -> Option<ResultCard> {
+        let (input, files, findings) = self.scan_summary()?;
+        let input = input.display().to_string();
+        Some(viewmodel::scan_card(&input, files, findings))
+    }
+
+    /// The card after the last mask.
+    pub fn mask_card(&self) -> Option<ResultCard> {
+        self.mask_view().as_ref().map(viewmodel::mask_card)
+    }
+
+    /// The card after the last folder restore.
+    pub fn restore_card(&self) -> Option<ResultCard> {
+        self.restore_result.as_ref().map(viewmodel::restore_card)
+    }
+
+    /// The last error as a card.
+    pub fn error_card(&self) -> Option<ResultCard> {
+        self.error().map(|e| viewmodel::error_card(e.to_string()))
+    }
+
+    /// Goes to the screen of `step` ("Next: <step>", a rail click), if its
+    /// tab is enabled. The Unlock screen is hidden while unlocked.
+    pub fn go_to(&mut self, step: Step) {
+        let screen = step_screen(step);
+        let hidden = screen == Screen::Unlock && self.is_unlocked();
+        if !hidden && self.tab_hint(screen).is_none() {
+            self.screen = screen;
+        }
+    }
+
     /// D126: the vault and profile files must not be inside `folder`.
     fn keep_outside(&self, folder: &Path) -> Result<(), GuiError> {
         check_outside(&self.vault_file()?, folder, GuiError::VaultInProject)?;
         check_outside(&self.profile_file()?, folder, GuiError::ProfileInProject)
+    }
+}
+
+/// The screen of a rail step.
+pub fn step_screen(step: Step) -> Screen {
+    match step {
+        Step::Vault => Screen::Unlock,
+        Step::Scan => Screen::Scan,
+        Step::Review => Screen::Review,
+        Step::Mask => Screen::Mask,
+        Step::Restore => Screen::Restore,
     }
 }
 

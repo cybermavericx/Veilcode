@@ -1,6 +1,7 @@
 //! The mandatory review before every mask (D80).
 
 use super::scan::profile_row;
+use super::{chrome, finding_text};
 use crate::app::Forms;
 use crate::state::{AppState, Screen};
 use crate::viewmodel::FindingRow;
@@ -34,7 +35,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         .show(ui, |ui| {
             for row in &view.ignored {
                 ui.horizontal(|ui| {
-                    ui.label(row_text(row));
+                    ui.label(finding_text(row));
+                    chrome::veil_chip(ui, &row.preview);
                     if ui.button("Unignore").clicked() {
                         let r = state.unignore(&row.id);
                         state.report(r);
@@ -58,17 +60,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
     everywhere_modal(ui, state, forms);
 }
 
-fn row_text(row: &FindingRow) -> String {
-    format!("{}:{}  {}", row.rel_path, row.line, row.preview)
-}
-
 fn finding_row(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms, row: &FindingRow) {
     ui.horizontal(|ui| {
         let mut ticked = row.ticked;
-        if ui.checkbox(&mut ticked, row_text(row)).changed() {
+        if ui.checkbox(&mut ticked, finding_text(row)).changed() {
             let r = state.set_ticked(&row.id, ticked);
             state.report(r);
         }
+        chrome::veil_chip(ui, &row.preview);
         if row.ticked {
             return;
         }

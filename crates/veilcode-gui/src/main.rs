@@ -11,6 +11,7 @@ mod idle;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod theme;
 mod viewmodel;
 mod views;
 mod worker;

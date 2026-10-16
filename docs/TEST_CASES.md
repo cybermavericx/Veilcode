@@ -562,6 +562,21 @@ Also check that:
 - the suggested Create path is `<local data dir>/vault.vc`;
 - Create is disabled until path, length and match are all valid;
 - each unmet condition yields its message.
+### G13 — theme contrast (D133)
+Type: auto
+For the light and dark themes, every text/background colour pair the theme defines (body text, weak text, text-edit field, selection, buttons, result-card text on the card fill, error text, rail labels, veil-chip text on the chip fill) has a WCAG relative-luminance contrast ratio of at least 4.5. The test computes the ratio with the WCAG formula and lists any failing pair by name.
+### G14 — workflow rail state (D131)
+Type: auto
+App-state tests. Pass when:
+- locked: Vault is current and every later step is locked;
+- after unlock: Vault is done and Scan is available;
+- after a scan: Review is current;
+- after a confirmed review: Mask is available;
+- after a mask: Mask is done, the result card holds counts and the output folder (no values), and Next is Restore;
+- after a clean restore: Restore is done and the card says "session forgotten";
+- Lock now resets to the locked state.
+
+The Debug output of the rail and the cards passes `assert_no_secret`.
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

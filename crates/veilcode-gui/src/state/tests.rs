@@ -872,3 +872,126 @@ fn g12_unresolvable_vault_path_fails_closed() {
         assert!(msg.starts_with("could not check"), "{msg}");
     }
 }
+
+// ---- G14: workflow rail and result cards (D131) ----
+
+use crate::viewmodel::{Step, StepState};
+
+fn rail_states(s: &AppState) -> Vec<(Step, StepState)> {
+    s.rail().steps.iter().map(|r| (r.step, r.state)).collect()
+}
+
+fn assert_locked_rail(s: &AppState) {
+    use StepState::{Current, Locked};
+    let want = [Current, Locked, Locked, Locked, Locked];
+    assert_eq!(
+        rail_states(s),
+        Step::ALL.into_iter().zip(want).collect::<Vec<_>>()
+    );
+    let numbers: Vec<_> = s.rail().steps.iter().map(|r| r.number).collect();
+    assert_eq!(numbers, [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn g14_locked_rail_has_vault_current_and_later_steps_locked() {
+    let fx = Fixture::new();
+    assert_locked_rail(&fx.state());
+}
+
+#[test]
+fn g14_rail_follows_unlock_scan_and_review() {
+    use StepState::{Available, Current, Done, Locked};
+    let fx = Fixture::new();
+    let mut s = fx.unlocked();
+    let r = s.rail();
+    assert_eq!(r.state(Step::Vault), Done);
+    assert_eq!(r.state(Step::Scan), Available);
+    assert_eq!(r.state(Step::Review), Locked);
+    assert_eq!(r.state(Step::Mask), Locked);
+    assert_eq!(r.state(Step::Restore), Available);
+    done(&mut s, |s| s.scan(fx.input.clone()));
+    let r = s.rail();
+    assert_eq!(r.state(Step::Scan), Done);
+    assert_eq!(r.state(Step::Review), Current);
+    assert_eq!(r.state(Step::Mask), Locked);
+    let card = s.scan_card().expect("scan card");
+    assert_eq!(card.title, "Scanned 3 files: 2 findings");
+    assert_eq!(card.next, Some(Step::Review));
+    s.confirm_review().expect("confirm");
+    let r = s.rail();
+    assert_eq!(r.state(Step::Review), Done);
+    assert_eq!(r.state(Step::Mask), Available);
+    // "Next" and rail clicks switch screens; Vault (Unlock) stays hidden.
+    s.go_to(Step::Mask);
+    assert_eq!(s.shown_screen(), Screen::Mask);
+    s.go_to(Step::Vault);
+    assert_eq!(s.shown_screen(), Screen::Mask);
+}
+
+#[test]
+fn g14_mask_card_holds_counts_and_folder_and_next_is_restore() {
+    use StepState::{Available, Done};
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let out = fx.path("masked");
+    done(&mut s, |s| s.mask(out.clone(), MaskForm::default()));
+    let r = s.rail();
+    assert_eq!(r.state(Step::Review), Done);
+    assert_eq!(r.state(Step::Mask), Done);
+    assert_eq!(r.state(Step::Restore), Available);
+    let card = s.mask_card().expect("mask card");
+    assert!(!card.error);
+    assert_eq!(card.title, "Masked 2 secrets; wrote 3 files");
+    assert_eq!(
+        card.folder,
+        Some(("Output folder", out.display().to_string()))
+    );
+    assert!(
+        card.lines
+            .contains(&"Give this folder to the AI.".to_string())
+    );
+    assert!(card.lines.contains(&"Tokens: 2".to_string()));
+    assert_eq!(card.next, Some(Step::Restore));
+    s.go_to(card.next.expect("next"));
+    assert_eq!(s.shown_screen(), Screen::Restore);
+    let debug = format!("{:?}{card:?}", s.rail());
+    assert_no_secret(debug.as_bytes(), &fx.secrets());
+}
+
+#[test]
+fn g14_clean_restore_card_says_session_forgotten_and_lock_resets() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let (masked, restored) = (fx.path("masked"), fx.path("restored"));
+    done(&mut s, |s| s.mask(masked.clone(), MaskForm::default()));
+    done(&mut s, |s| s.restore(masked, restored.clone(), None, false));
+    assert_eq!(s.rail().state(Step::Restore), StepState::Done);
+    let card = s.restore_card().expect("restore card");
+    assert_eq!(card.lines[0], "session forgotten");
+    assert_eq!(card.title, "Restored 2 tokens; wrote 3 files");
+    assert_eq!(
+        card.folder,
+        Some(("Output folder", restored.display().to_string()))
+    );
+    let mut debug = format!("{:?}{card:?}", s.rail());
+    debug += &format!("{:?}{:?}", s.mask_card(), s.scan_card());
+    assert_no_secret(debug.as_bytes(), &fx.secrets());
+    // Lock now: back to the locked rail, no cards.
+    s.lock();
+    assert_locked_rail(&s);
+    assert!(s.mask_card().is_none() && s.restore_card().is_none() && s.scan_card().is_none());
+}
+
+#[test]
+fn g14_errors_use_the_card_style() {
+    let fx = Fixture::new();
+    let mut s = fx.unlocked();
+    assert!(s.error_card().is_none());
+    s.report(Err(GuiError::NoScan));
+    let card = s.error_card().expect("error card");
+    assert!(card.error);
+    assert_eq!(card.title, GuiError::NoScan.to_string());
+    assert_eq!(card.next, None);
+}

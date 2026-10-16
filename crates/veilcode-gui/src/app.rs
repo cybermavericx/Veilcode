@@ -5,7 +5,8 @@ use crate::state::{
     AppState, ExistsCache, Outcome, Screen, check_local, check_new_vault, existing_ancestor,
     suggested_vault_path, wipe_string,
 };
-use crate::views;
+use crate::theme;
+use crate::views::{self, chrome};
 use crate::worker::ThreadRunner;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
@@ -155,6 +156,7 @@ const PROFILE_FILES: &str = "Veilcode profile (*.toml)";
 /// D125: the app, or an error screen when it cannot start (on Windows
 /// there is no console that could show the error).
 pub fn start(ctx: &egui::Context) -> Box<dyn eframe::App> {
+    theme::apply(ctx);
     match VeilApp::new(ctx) {
         Ok(app) => Box::new(app),
         Err(e) => Box::new(StartupError(format!(
@@ -319,9 +321,8 @@ impl VeilApp {
                 ui.spinner();
                 ui.label("Working…");
             }
-            if let Some(e) = self.state.error() {
-                ui.colored_label(ui.visuals().error_fg_color, e.to_string());
-            } else if let Some(n) = self.state.notice() {
+            // Errors are shown as cards on the screens (D131).
+            if let Some(n) = self.state.notice() {
                 ui.label(n);
             }
         });
@@ -332,7 +333,10 @@ impl VeilApp {
             self.target = Some(t);
             self.dialog = open_dialog(t, self.forms.create);
         }
-        self.dialog.update(ctx);
+        let dialog = &mut self.dialog;
+        theme::with_dialog_style(ctx, |ctx| {
+            dialog.update(ctx);
+        });
         let (Some(path), Some(t)) = (self.dialog.take_picked(), self.target) else {
             return;
         };
@@ -386,7 +390,14 @@ impl eframe::App for VeilApp {
         if ui.ctx().input(|i| i.events.iter().any(is_user_input)) {
             self.state.note_input();
         }
-        egui::Panel::top("nav").show(ui, |ui| self.top_bar(ui));
+        egui::Panel::top("nav").show(ui, |ui| {
+            chrome::header(ui);
+            self.top_bar(ui);
+            ui.separator();
+            let rail = self.state.rail();
+            chrome::rail(ui, &mut self.state, &rail);
+            ui.add_space(4.0);
+        });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {

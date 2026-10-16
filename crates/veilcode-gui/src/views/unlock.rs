@@ -1,6 +1,6 @@
 //! Unlock or create the vault (default or a per-project file, D64).
 
-use super::{clear_fields, help, pass_row, path_row};
+use super::{chrome, clear_fields, help, pass_row, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::{AppState, GuiError, create_problems, suggested_vault_path};
 use crate::viewmodel::UNLOCK_HINT;
@@ -50,8 +50,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
     if ui.add_enabled(ok, egui::Button::new(label)).clicked() {
         submit(state, forms, ui.ctx());
     }
-    if let Some(e) = state.error() {
-        ui.colored_label(error, e.to_string());
+    if let Some(card) = state.error_card() {
+        chrome::card(ui, state, &card);
     }
     ui.separator();
     egui::CollapsingHeader::new("How Veilcode works")

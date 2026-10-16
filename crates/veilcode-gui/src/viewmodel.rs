@@ -88,12 +88,14 @@ pub struct MaskView {
     pub tokens: usize,
     pub ignored_by_profile: usize,
     pub not_copied: usize,
+    /// The output folder.
+    pub out: String,
     /// Set when the mask went into a separate per-project vault (D64).
     pub vault: Option<String>,
 }
 
 /// Builds the mask result model.
-pub fn mask_view(r: &MaskReport, vault: Option<String>) -> MaskView {
+pub fn mask_view(r: &MaskReport, out: String, vault: Option<String>) -> MaskView {
     MaskView {
         session_id: r.session_id.as_str().to_string(),
         files_written: r.files_written,
@@ -101,6 +103,7 @@ pub fn mask_view(r: &MaskReport, vault: Option<String>) -> MaskView {
         tokens: r.tokens,
         ignored_by_profile: r.ignored_by_profile,
         not_copied: r.not_copied.len(),
+        out,
         vault,
     }
 }
@@ -119,10 +122,12 @@ pub struct RestoreView {
     pub session_forgotten: bool,
     /// "session forgotten" or why the session was kept (D60).
     pub outcome: String,
+    /// The output folder (`None` for Text Mode).
+    pub out: Option<String>,
 }
 
 /// Builds the restore result model.
-pub fn restore_view(r: &RestoreReport) -> RestoreView {
+pub fn restore_view(r: &RestoreReport, out: Option<String>) -> RestoreView {
     RestoreView {
         files_written: r.files_written,
         tokens_replaced: r.tokens_replaced,
@@ -138,6 +143,7 @@ pub fn restore_view(r: &RestoreReport) -> RestoreView {
         tokens_in_unscanned: r.tokens_in_unscanned,
         session_forgotten: r.session_forgotten,
         outcome: outcome(r),
+        out,
     }
 }
 
@@ -255,6 +261,205 @@ pub fn guide(vault: Option<&std::path::Path>, profile: Option<&std::path::Path>)
             format!("Default vault: {}", at(vault)),
             format!("Default profile: {}", at(profile)),
         ],
+    }
+}
+
+/// The five workflow steps of the rail (D131).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Vault,
+    Scan,
+    Review,
+    Mask,
+    Restore,
+}
+
+impl Step {
+    pub const ALL: [Step; 5] = [
+        Step::Vault,
+        Step::Scan,
+        Step::Review,
+        Step::Mask,
+        Step::Restore,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Step::Vault => "Vault",
+            Step::Scan => "Scan",
+            Step::Review => "Review",
+            Step::Mask => "Mask",
+            Step::Restore => "Restore",
+        }
+    }
+}
+
+/// How a rail step is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    /// Finished in this unlocked session.
+    Done,
+    /// Must be finished before the later steps open: the vault while
+    /// locked, the review of an unconfirmed scan (D80).
+    Current,
+    /// Can be started.
+    Available,
+    /// Needs an earlier step first.
+    Locked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailStep {
+    pub step: Step,
+    /// 1 to 5.
+    pub number: usize,
+    pub state: StepState,
+}
+
+/// The step rail under the header (D131).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRail {
+    pub steps: Vec<RailStep>,
+}
+
+#[cfg(test)]
+impl WorkflowRail {
+    /// The state of `step`.
+    pub fn state(&self, step: Step) -> StepState {
+        self.steps
+            .iter()
+            .find(|s| s.step == step)
+            .map_or(StepState::Locked, |s| s.state)
+    }
+}
+
+/// What the app state knows about the workflow.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Progress {
+    pub unlocked: bool,
+    pub scanned: bool,
+    pub confirmed: bool,
+    /// The current scan was masked.
+    pub masked: bool,
+    pub restored: bool,
+}
+
+/// Derives the rail from `p`.
+pub fn workflow_rail(p: &Progress) -> WorkflowRail {
+    let steps = Step::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &step)| RailStep {
+            step,
+            number: i + 1,
+            state: step_state(step, p),
+        })
+        .collect();
+    WorkflowRail { steps }
+}
+
+fn step_state(step: Step, p: &Progress) -> StepState {
+    use StepState::{Available, Current, Done, Locked};
+    let done = match step {
+        Step::Vault => p.unlocked,
+        Step::Scan => p.unlocked && p.scanned,
+        Step::Review => p.scanned && (p.confirmed || p.masked),
+        Step::Mask => p.masked && !p.confirmed,
+        Step::Restore => p.unlocked && p.restored,
+    };
+    let open = match step {
+        Step::Vault => true,
+        Step::Scan | Step::Restore => p.unlocked,
+        Step::Review => p.scanned,
+        Step::Mask => p.confirmed,
+    };
+    let gate = matches!(step, Step::Vault | Step::Review);
+    match (done, open) {
+        (true, _) => Done,
+        (false, false) => Locked,
+        (false, true) if gate => Current,
+        (false, true) => Available,
+    }
+}
+
+/// A result card under an action (D131): counts, folders and outcomes,
+/// never values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultCard {
+    pub error: bool,
+    pub title: String,
+    /// The folder the result is in, with its label.
+    pub folder: Option<(&'static str, String)>,
+    pub lines: Vec<String>,
+    /// The "Next: <step>" button.
+    pub next: Option<Step>,
+}
+
+/// The card after a scan.
+pub fn scan_card(input: &str, files: usize, findings: usize) -> ResultCard {
+    ResultCard {
+        error: false,
+        title: format!("Scanned {files} files: {findings} findings"),
+        folder: Some(("Scanned folder", input.to_string())),
+        lines: vec!["Review what will be masked before masking.".to_string()],
+        next: Some(Step::Review),
+    }
+}
+
+/// The card after a mask.
+pub fn mask_card(m: &MaskView) -> ResultCard {
+    let mut lines = vec![
+        "Give this folder to the AI.".to_string(),
+        format!("Session {}", m.session_id),
+        format!("Tokens: {}", m.tokens),
+        format!("Ignored by profile (not masked): {}", m.ignored_by_profile),
+        format!("Files not copied (binary or oversized): {}", m.not_copied),
+    ];
+    if let Some(v) = &m.vault {
+        lines.push(format!("Stored in the separate vault {v}"));
+    }
+    ResultCard {
+        error: false,
+        title: format!(
+            "Masked {} secrets; wrote {} files",
+            m.secrets_masked, m.files_written
+        ),
+        folder: Some(("Output folder", m.out.clone())),
+        lines,
+        next: Some(Step::Restore),
+    }
+}
+
+/// The card after a folder restore.
+pub fn restore_card(r: &RestoreView) -> ResultCard {
+    ResultCard {
+        error: false,
+        title: format!(
+            "Restored {} tokens; wrote {} files",
+            r.tokens_replaced, r.files_written
+        ),
+        folder: r.out.clone().map(|o| ("Output folder", o)),
+        lines: vec![
+            r.outcome.clone(),
+            format!("New secrets (added since masking): {}", r.new_secrets.len()),
+            format!("New secrets ignored by profile: {}", r.ignored_new_secrets),
+            format!("Unknown tokens: {}", r.unknown),
+            format!("Missing tokens: {}", r.missing),
+            format!("Files not copied: {}", r.not_copied),
+            format!("Tokens in unscanned files: {}", r.tokens_in_unscanned),
+        ],
+        next: None,
+    }
+}
+
+/// An error in the card style. `msg` is a `GuiError` text (no values).
+pub fn error_card(msg: String) -> ResultCard {
+    ResultCard {
+        error: true,
+        title: msg,
+        folder: None,
+        lines: Vec::new(),
+        next: None,
     }
 }
 
