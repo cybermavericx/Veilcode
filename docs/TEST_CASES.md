@@ -544,6 +544,15 @@ Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.
 
 ## P7 — App release
+### PKG1 — .deb contents and metadata (D114)
+Type: command
+In the packaging job, `dpkg-deb -I` shows Package `veilcode`, Architecture `amd64`, the D114 Maintainer and a Depends line with libc6 plus the GUI runtime libraries. `dpkg-deb -c` lists exactly `usr/bin/veilcode`, `usr/bin/veilcode-gui`, `usr/share/applications/veilcode.desktop` and the licence files. The job fails otherwise.
+### PKG2 — .msi contents, per-user scope (D113)
+Type: command
+On the windows runner, an administrative extract of the `.msi` (`msiexec /a <msi> /qn TARGETDIR=<tmp>`, which does not install) contains `veilcode.exe` and `veilcode-gui.exe`, byte-identical to the build outputs, plus the licence files. The `.wxs` declares `InstallScope="perUser"` and the fixed UpgradeCode. The job fails otherwise.
+### PKG3 — every shipped file is hashed and attested (D115)
+Type: command
+In the release job, the exact-file-set check lists every asset, SHA256SUMS covers all of them, and the attest `subject-path` matches all of them. Confirmed after the first tag run with `gh attestation verify` on each asset.
 ### REL4 — installers run offline
 Type: manual
 On Windows and on Linux, install from the release artifacts with the network blocked per VERIFY_OFFLINE.md, then mask and restore a sample folder through the GUI.

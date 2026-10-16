@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Veilcode
+GenericName=Secret Masker
+Comment=Mask secrets in a code folder before sharing it with an AI assistant
+Exec=veilcode-gui
+Terminal=false
+Categories=Development;

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Veilcode per-user MSI (D111, D113). WiX Toolset v3 (3.14.1.8722 on the
+  windows runner image), built by release.yml's package-windows job:
+    candle -nologo -arch x64 -dVersion=<x.y.z> -dBinDir=<dir> -dSrcDir=<repo> veilcode.wxs
+    light  -nologo -spdb -out <msi> veilcode.wixobj
+  Element and attribute names: wix3 tag wix3141rtm, src/tools/wix/Xsd/wix.xsd.
+  ICE rules for per-user installs (VERIFY_LOG 2026-10-16):
+    ICE38/ICE43 - a component in the user profile, or with a non-advertised
+                  shortcut, needs an HKCU registry value as its KeyPath;
+    ICE64       - every new directory in the user profile needs a RemoveFolder;
+    ICE91       - warning only for files in per-user folders; harmless for a
+                  package that is only ever installed per-user.
+  Component GUIDs are fixed because WiX can generate them only for components
+  whose keypath is a single file (or a registry value with no files).
+  UpgradeCode is generated once and must never change (D113).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Veilcode"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="Cybermavericx"
+           UpgradeCode="9BAD5B61-2466-4D7C-96DF-1FB5DAC739BF">
+    <!-- perUser: no elevation, InstallPrivileges limited (wix.xsd). -->
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             Description="Veilcode $(var.Version)" />
+
+    <!-- D122: AllowSameVersionUpgrades sets VersionMaxInclusive (wix.xsd, Compiler.cs),
+         so v0.2.0 replaces v0.2.0-rcN (same MSI version 0.2.0) instead of adding a
+         second product. ICE61 flags an inclusive max at the current version; whether
+         as warning or error is UNVERIFIED until CI. It is not suppressed. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Veilcode is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- %LOCALAPPDATA%\Programs\Veilcode, plus a Start-menu entry. -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserProgramsDir" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Veilcode" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppFiles" Guid="39B703DB-119A-4C32-A8AD-B5AC1EE8C95F">
+        <File Id="VeilcodeExe" Name="veilcode.exe" Source="$(var.BinDir)\veilcode.exe" />
+        <File Id="VeilcodeGuiExe" Name="veilcode-gui.exe" Source="$(var.BinDir)\veilcode-gui.exe" />
+        <File Id="LicenseMit" Name="LICENSE-MIT" Source="$(var.SrcDir)\LICENSE-MIT" />
+        <File Id="LicenseApache" Name="LICENSE-APACHE" Source="$(var.SrcDir)\LICENSE-APACHE" />
+        <File Id="ThirdPartyNotices" Name="THIRD_PARTY_NOTICES" Source="$(var.SrcDir)\THIRD_PARTY_NOTICES" />
+        <!-- ICE64: both new profile folders are removed on uninstall (only if empty). -->
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveUserProgramsDir" Directory="UserProgramsDir" On="uninstall" />
+        <!-- ICE38: HKCU KeyPath. -->
+        <RegistryValue Root="HKCU" Key="Software\Veilcode" Name="files" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="C489B5B1-6442-4BD8-BEB3-43C159C80277">
+        <Shortcut Id="VeilcodeGuiShortcut"
+                  Name="Veilcode"
+                  Description="Mask secrets in a code folder before sharing it with an AI assistant"
+                  Target="[INSTALLFOLDER]veilcode-gui.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <!-- ICE43: non-advertised shortcut, so HKCU KeyPath. -->
+        <RegistryValue Root="HKCU" Key="Software\Veilcode" Name="shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Veilcode" Level="1">
+      <ComponentRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>

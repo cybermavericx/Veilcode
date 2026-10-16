@@ -1,6 +1,6 @@
 # Veilcode — Execution Plan (for SPEC v1.1)
 
-**Current phase: P6** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
+**Current phase: P7** (set to PN as the first commit of phase N; read by scripts/check-test-ids.sh)
 
 Rules:
 - One phase per branch and PR.
@@ -104,10 +104,10 @@ Tests: G1–G10 (incl. G9b).
 Acceptance: standard checks ✔ · net-audit (CLI + GUI) ✔ · `cargo build --release -p veilcode-gui` succeeds on all 3 OS in CI.
 
 ## P7 — App release v0.2.0
-- [ ] Choose the packager per DECISIONS "Open" and log it. Deliverables: Windows `.msi` plus portable `.zip`; Linux `.deb` plus `.tar.gz` (AppImage optional). Same checksums, SBOM and attestations as P5.
+- [x] Choose the packager per DECISIONS "Open" and log it (D111: cargo-deb + WiX 3; GUI on glibc, D112). Deliverables: Windows `.msi` plus portable `.zip`; Linux `.deb` plus `.tar.gz` (AppImage optional). Same checksums, SBOM and attestations as P5.
 - [ ] README gets screenshots and a demo GIF; CONTRIBUTING.md; good-first-issue labels (new detector rules).
 
-Tests: REL4.
+Tests: PKG1–PKG3, REL4.
 Acceptance: the release artifacts install and run offline (verified per VERIFY_OFFLINE.md on Windows **and** Linux).
 
 ## Backlog (not scheduled)
