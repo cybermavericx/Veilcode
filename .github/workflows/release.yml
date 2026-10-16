@@ -390,7 +390,11 @@ jobs:
           fi
           echo "MSI_VERSION=$core"
           echo "MSI_VERSION=$core" >> "$GITHUB_ENV"
-      - name: check WiX is 3.14.1.8722 (D111)
+      # WiX Toolset 3.14.1 (runner-images lists 3.14.1.8722). Its binaries
+      # carry file version 3.14.8722.0, observed for candle.exe on the
+      # v0.2.0-rc1 run (VERIFY_LOG 2026-10-16); the product version is printed
+      # for the record. D111.
+      - name: check WiX is 3.14.1 (file version 3.14.8722.0, D111)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -400,8 +404,8 @@ jobs:
             if (-not (Test-Path -LiteralPath $path)) { throw "missing $path" }
             $vi = (Get-Item -LiteralPath $path).VersionInfo
             $v = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
-            Write-Output "$path file version $v"
-            if ($v -ne '3.14.1.8722') { throw "$tool is $v, want 3.14.1.8722" }
+            Write-Output "$path file version $v, product version $($vi.ProductVersion)"
+            if ($v -ne '3.14.8722.0') { throw "$tool file version is $v, want 3.14.8722.0" }
           }
           & (Join-Path $env:WIX 'bin\candle.exe') -? | Select-Object -First 3
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
