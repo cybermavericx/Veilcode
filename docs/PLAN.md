@@ -105,7 +105,7 @@ Acceptance: standard checks ✔ · net-audit (CLI + GUI) ✔ · `cargo build --r
 
 ## P7 — App release v0.2.0
 - [x] Choose the packager per DECISIONS "Open" and log it (D111: cargo-deb + WiX 3; GUI on glibc, D112). Deliverables: Windows `.msi` plus portable `.zip`; Linux `.deb` plus `.tar.gz` (AppImage optional). Same checksums, SBOM and attestations as P5.
-- [ ] README gets screenshots and a demo GIF; CONTRIBUTING.md; good-first-issue labels (new detector rules).
+- [x] CONTRIBUTING.md; good-first-issue label and starter issues #14–#16 (D116). Screenshots come from the maintainer's G8 run (D124); demo GIF moved to the backlog.
 
 Tests: PKG1–PKG3, REL4.
 Acceptance: the release artifacts install and run offline (verified per VERIFY_OFFLINE.md on Windows **and** Linux).
