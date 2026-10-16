@@ -505,3 +505,493 @@ fn g10_idle_lock_wipes_forms() {
     slow.frame();
     slow.assert_wiped(forms);
 }
+
+// ---- G11: guide and locked-state hints (D127) ----
+
+#[test]
+fn g11_locked_tabs_report_the_hint_and_help_is_always_reachable() {
+    let fx = Fixture::new();
+    let mut s = fx.state();
+    for screen in Screen::ALL {
+        let hint = s.tab_hint(screen);
+        if matches!(screen, Screen::Unlock | Screen::Help) {
+            assert_eq!(hint, None, "{screen:?}");
+        } else {
+            assert_eq!(hint, Some("Create or open a vault first"), "{screen:?}");
+        }
+        s.screen = screen;
+        let shown = if hint.is_some() {
+            Screen::Unlock
+        } else {
+            screen
+        };
+        assert_eq!(s.shown_screen(), shown, "{screen:?}");
+    }
+    let mut s = fx.unlocked();
+    for screen in Screen::ALL {
+        assert_eq!(s.tab_hint(screen), None, "{screen:?}");
+        s.screen = screen;
+        assert_eq!(s.shown_screen(), screen, "{screen:?}");
+    }
+}
+
+#[test]
+fn g11_guide_has_steps_and_safety_rules_and_no_links() {
+    let fx = Fixture::new();
+    let (vault, profile) = (fx.path("data/vault.vc"), fx.path("config/profile.toml"));
+    let g = viewmodel::guide(Some(&vault), Some(&profile));
+    let steps = [
+        "Create or open a vault",
+        "Scan",
+        "Review what will be masked",
+        "Mask into a new folder",
+        "Restore the AI's folder into another new folder",
+    ];
+    assert_eq!(g.steps.len(), 5);
+    for (step, want) in g.steps.iter().zip(steps) {
+        assert!(step.contains(want), "{step}");
+    }
+    assert!(g.steps[3].contains("give that folder to the AI"));
+    let rules = [
+        "never modified",
+        "must be a new folder",
+        "outside the project folder",
+        "throwaway",
+    ];
+    assert_eq!(g.safety.len(), 4);
+    for (rule, want) in g.safety.iter().zip(rules) {
+        assert!(rule.contains(want), "{rule}");
+    }
+    let storage = g.storage.join("\n");
+    assert!(storage.contains(&vault.display().to_string()), "{storage}");
+    assert!(
+        storage.contains(&profile.display().to_string()),
+        "{storage}"
+    );
+    let none = viewmodel::guide(None, None);
+    assert_eq!(none.storage.len(), 2);
+    let debug = format!("{g:?}{none:?}{}", viewmodel::UNLOCK_HINT);
+    assert!(!debug.contains("http"), "{debug}");
+    assert_no_secret(debug.as_bytes(), &fx.secrets());
+}
+
+// ---- G12: vault and profile path safety (D126, D128) ----
+
+fn messages(problems: &[GuiError]) -> Vec<String> {
+    problems.iter().map(|e| e.to_string()).collect()
+}
+
+const GOOD: &str = "correct horse battery";
+
+#[test]
+fn g12_create_refuses_an_existing_file_before_any_core_call() {
+    let fx = Fixture::new();
+    let wp = fx.path("wp-config.php");
+    std::fs::write(&wp, b"<?php\n").expect("write");
+    let mut s = fx.state();
+    s.set_vault_path(Some(wp.clone())).expect("locked");
+    let pass = || SecretString::new(GOOD.to_string());
+    let r = s.create_vault(pass(), pass());
+    assert!(matches!(r, Err(GuiError::VaultExists)), "{r:?}");
+    assert!(!s.is_busy() && !s.is_unlocked(), "a job was dispatched");
+    assert_eq!(read(&wp), "<?php\n");
+    let p = problems(Some(&wp), GOOD, GOOD);
+    assert_eq!(
+        messages(&p),
+        ["a vault already exists at this path; open it instead"]
+    );
+}
+
+#[test]
+fn g12_relative_vault_and_profile_paths_are_refused() {
+    let fx = Fixture::new();
+    let mut s = fx.state();
+    s.set_vault_path(Some(PathBuf::from("vault.vc")))
+        .expect("locked");
+    let pass = || SecretString::new(GOOD.to_string());
+    for r in [s.create_vault(pass(), pass()), s.unlock(pass())] {
+        let msg = r.expect_err("relative vault accepted").to_string();
+        assert!(msg.contains("use Browse… or a full path"), "{msg}");
+    }
+    assert!(!s.is_busy());
+    let p = problems(Some(Path::new("vault.vc")), GOOD, GOOD);
+    assert!(matches!(p.as_slice(), [GuiError::RelativePath]), "{p:?}");
+    let mut s = fx.unlocked();
+    s.set_profile_path(Some(PathBuf::from("profile.toml")))
+        .expect("idle");
+    let r = s.scan(fx.input.clone());
+    assert!(matches!(r, Err(GuiError::RelativePath)), "{r:?}");
+    assert!(!s.is_busy());
+}
+
+#[test]
+fn g12_vault_inside_the_project_folder_is_refused() {
+    let fx = Fixture::new();
+    let mut s = fx.state();
+    s.set_vault_path(Some(fx.input.join("sub/vault.vc")))
+        .expect("locked");
+    let pass = || SecretString::new(GOOD.to_string());
+    done(&mut s, |s| s.create_vault(pass(), pass()));
+    // Also through a `..` detour to the same folder.
+    for input in [fx.input.clone(), fx.input.join("src/..")] {
+        let msg = s.scan(input).expect_err("vault in project").to_string();
+        assert_eq!(msg, "keep the vault outside the project folder");
+        assert!(!s.is_busy());
+    }
+    // Restoring a folder that holds the vault is refused too.
+    let mut s = fx.unlocked();
+    let r = s.restore(fx.tmp.path().to_path_buf(), fx.path("r"), None, false);
+    assert!(matches!(r, Err(GuiError::VaultInProject)), "{r:?}");
+    assert!(!fx.path("r").exists());
+    // A separate per-project vault (D64) inside the project is refused.
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let form = MaskForm {
+        separate_vault: Some(SeparateVault {
+            path: fx.input.join("project.vc"),
+            pass: SecretString::new(GOOD.to_string()),
+            confirm: SecretString::new(GOOD.to_string()),
+        }),
+        ..MaskForm::default()
+    };
+    let r = s.mask(fx.path("masked"), form);
+    assert!(matches!(r, Err(GuiError::VaultInProject)), "{r:?}");
+    assert!(!fx.path("masked").exists() && !fx.input.join("project.vc").exists());
+}
+
+#[test]
+fn g12_profile_inside_the_project_folder_is_refused() {
+    let fx = Fixture::new();
+    let inside = fx.input.join(".veilcode/profile.toml");
+    let mut s = fx.unlocked();
+    s.set_profile_path(Some(inside.clone())).expect("idle");
+    let msg = s.scan(fx.input.clone()).expect_err("profile in project");
+    assert_eq!(
+        msg.to_string(),
+        "keep the profile outside the project folder"
+    );
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    s.set_profile_path(Some(inside.clone())).expect("idle");
+    let r = s.mask(fx.path("masked"), MaskForm::default());
+    assert!(matches!(r, Err(GuiError::ProfileInProject)), "{r:?}");
+    let r = s.restore(fx.input.clone(), fx.path("r"), None, false);
+    assert!(matches!(r, Err(GuiError::ProfileInProject)), "{r:?}");
+    assert!(!inside.exists() && !fx.path("masked").exists() && !fx.path("r").exists());
+}
+
+#[test]
+fn g12_create_is_disabled_until_path_length_and_match_are_valid() {
+    let fx = Fixture::new();
+    let new = fx.path("new/vault.vc");
+    assert!(problems(Some(&new), GOOD, GOOD).is_empty());
+    let short = "passphrase must be at least 12 characters";
+    let mismatch = "the passphrases do not match";
+    assert_eq!(messages(&problems(Some(&new), "short", "short")), [short]);
+    // Characters are counted as core counts them (Unicode scalar values).
+    let (e11, e12) = ("é".repeat(11), "é".repeat(12));
+    assert_eq!(messages(&problems(Some(&new), &e11, &e11)), [short]);
+    assert!(problems(Some(&new), &e12, &e12).is_empty());
+    assert_eq!(messages(&problems(Some(&new), GOOD, "other")), [mismatch]);
+    let all = problems(Some(Path::new("v.vc")), "short", "other");
+    let relative = GuiError::RelativePath.to_string();
+    assert_eq!(messages(&all), [relative.as_str(), short, mismatch]);
+    let none = problems(None, GOOD, GOOD);
+    assert!(
+        matches!(none.as_slice(), [GuiError::NoDefaultPath]),
+        "{none:?}"
+    );
+}
+
+#[test]
+fn g12_suggested_create_path_is_the_local_data_vault() {
+    let fx = Fixture::new();
+    let suggested = suggested_vault_path();
+    assert_eq!(suggested, default_vault_path());
+    let p = suggested.expect("a local data dir in the test environment");
+    assert_eq!(p.file_name(), Some(std::ffi::OsStr::new("vault.vc")));
+    assert!(p.is_absolute(), "{}", p.display());
+    // The picker opens in the nearest folder that exists.
+    let deep = fx.path("a/b/c");
+    assert_eq!(existing_ancestor(&deep), Some(fx.tmp.path().to_path_buf()));
+    assert_eq!(existing_ancestor(&fx.input), Some(fx.input.clone()));
+}
+
+/// `create_problems` with a fresh existence cache.
+fn problems(path: Option<&Path>, pass: &str, confirm: &str) -> Vec<GuiError> {
+    create_problems(path, pass, confirm, &mut ExistsCache::default())
+}
+
+// ---- G12 additions from the security review (D130) ----
+
+const NETWORK: &str = "network and device paths are not supported";
+
+#[test]
+fn g12_network_and_device_paths_are_refused_as_text() {
+    let refused = [
+        r"\\server\share\vault.vc",
+        r"\\?\UNC\server\share\vault.vc",
+        r"\\.\pipe\veilcode",
+        r"\\.\C:\vault.vc",
+        "//host/share/vault.vc",
+        r"\/host\share",
+        r"/\host\share",
+        r"\??\UNC\server\share",
+    ];
+    for p in refused {
+        let msg = check_local(Path::new(p)).expect_err(p).to_string();
+        assert_eq!(msg, NETWORK, "{p}");
+    }
+    for p in [
+        r"\\?\C:\data\vault.vc",
+        r"C:\data\vault.vc",
+        "/tmp/vault.vc",
+        "v.vc",
+    ] {
+        assert!(check_local(Path::new(p)).is_ok(), "{p}");
+    }
+    // The existence cache is never consulted for such a path.
+    let mut cache = ExistsCache::default();
+    let unc = Path::new(r"\\server\share\vault.vc");
+    let p = create_problems(Some(unc), GOOD, GOOD, &mut cache);
+    assert_eq!(messages(&p), [NETWORK]);
+    assert_eq!(cache.fs_checks(), 0);
+}
+
+#[test]
+fn g12_network_paths_are_refused_by_every_action() {
+    let fx = Fixture::new();
+    let unc = || PathBuf::from(r"\\server\share\x");
+    let pass = || SecretString::new(GOOD.to_string());
+    let mut s = fx.state();
+    s.set_vault_path(Some(unc())).expect("locked");
+    let r = s.create_vault(pass(), pass());
+    assert_eq!(r.expect_err("unc vault").to_string(), NETWORK);
+    let mut s = fx.unlocked();
+    assert_eq!(s.scan(unc()).expect_err("unc input").to_string(), NETWORK);
+    let r = s.restore(unc(), fx.path("r"), None, false);
+    assert_eq!(r.expect_err("unc restore in").to_string(), NETWORK);
+    let r = s.restore(fx.path("m"), unc(), None, false);
+    assert_eq!(r.expect_err("unc restore out").to_string(), NETWORK);
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let r = s.mask(unc(), MaskForm::default());
+    assert_eq!(r.expect_err("unc mask out").to_string(), NETWORK);
+    let form = MaskForm {
+        separate_vault: Some(SeparateVault {
+            path: unc(),
+            pass: pass(),
+            confirm: pass(),
+        }),
+        ..MaskForm::default()
+    };
+    let r = s.mask(fx.path("masked"), form);
+    assert_eq!(r.expect_err("unc separate vault").to_string(), NETWORK);
+    s.set_profile_path(Some(unc())).expect("idle");
+    let r = s.scan(fx.input.clone());
+    assert_eq!(r.expect_err("unc profile").to_string(), NETWORK);
+    assert!(!s.is_busy());
+}
+
+#[test]
+fn g12_create_path_existence_is_checked_once_per_change() {
+    let fx = Fixture::new();
+    let (a, b) = (fx.path("a.vc"), fx.path("b.vc"));
+    let mut cache = ExistsCache::default();
+    assert!(create_problems(Some(&a), GOOD, GOOD, &mut cache).is_empty());
+    std::fs::write(&a, b"x").expect("write");
+    for _ in 0..3 {
+        // Same path string: no new filesystem call (the result is cached).
+        assert!(create_problems(Some(&a), GOOD, GOOD, &mut cache).is_empty());
+    }
+    assert_eq!(cache.fs_checks(), 1);
+    assert!(create_problems(Some(&b), GOOD, GOOD, &mut cache).is_empty());
+    let p = create_problems(Some(&a), GOOD, GOOD, &mut cache);
+    assert!(matches!(p.as_slice(), [GuiError::VaultExists]), "{p:?}");
+    assert_eq!(cache.fs_checks(), 3);
+    // Submit checks again, whatever the cache says.
+    let mut s = fx.state();
+    s.set_vault_path(Some(a)).expect("locked");
+    let pass = || SecretString::new(GOOD.to_string());
+    assert!(matches!(
+        s.create_vault(pass(), pass()),
+        Err(GuiError::VaultExists)
+    ));
+}
+
+#[test]
+fn g12_case_differing_vault_path_inside_project_is_refused() {
+    let fx = Fixture::new();
+    let upper = fx.tmp.path().join("PROJECT").join("vault.vc");
+    let r = check_outside(&upper, &fx.input, GuiError::VaultInProject);
+    assert!(matches!(r, Err(GuiError::VaultInProject)), "{r:?}");
+    let other = fx.tmp.path().join("project2").join("vault.vc");
+    assert!(check_outside(&other, &fx.input, GuiError::VaultInProject).is_ok());
+}
+
+#[test]
+fn g12_separate_vault_inside_the_output_folder_is_refused() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let out = fx.path("masked");
+    let form = MaskForm {
+        separate_vault: Some(SeparateVault {
+            path: out.join("project.vc"),
+            pass: SecretString::new(GOOD.to_string()),
+            confirm: SecretString::new(GOOD.to_string()),
+        }),
+        ..MaskForm::default()
+    };
+    let r = s.mask(out.clone(), form);
+    assert!(matches!(r, Err(GuiError::VaultInProject)), "{r:?}");
+    assert!(!out.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn g12_symlink_into_the_project_is_refused() {
+    let fx = Fixture::new();
+    let link = fx.path("link");
+    std::os::unix::fs::symlink(&fx.input, &link).expect("symlink");
+    let r = check_outside(&link.join("vault.vc"), &fx.input, GuiError::VaultInProject);
+    assert!(matches!(r, Err(GuiError::VaultInProject)), "{r:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn g12_unresolvable_vault_path_fails_closed() {
+    let fx = Fixture::new();
+    let dangling = fx.path("dangling.vc");
+    std::os::unix::fs::symlink(fx.input.join("gone/vault.vc"), &dangling).expect("symlink");
+    let file = fx.path("plain-file");
+    std::fs::write(&file, b"x").expect("write");
+    for p in [dangling, file.join("vault.vc")] {
+        let r = check_outside(&p, &fx.input, GuiError::VaultInProject);
+        let msg = r.expect_err("unresolvable path accepted").to_string();
+        assert!(msg.starts_with("could not check"), "{msg}");
+    }
+}
+
+// ---- G14: workflow rail and result cards (D131) ----
+
+use crate::viewmodel::{Step, StepState};
+
+fn rail_states(s: &AppState) -> Vec<(Step, StepState)> {
+    s.rail().steps.iter().map(|r| (r.step, r.state)).collect()
+}
+
+fn assert_locked_rail(s: &AppState) {
+    use StepState::{Current, Locked};
+    let want = [Current, Locked, Locked, Locked, Locked];
+    assert_eq!(
+        rail_states(s),
+        Step::ALL.into_iter().zip(want).collect::<Vec<_>>()
+    );
+    let numbers: Vec<_> = s.rail().steps.iter().map(|r| r.number).collect();
+    assert_eq!(numbers, [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn g14_locked_rail_has_vault_current_and_later_steps_locked() {
+    let fx = Fixture::new();
+    assert_locked_rail(&fx.state());
+}
+
+#[test]
+fn g14_rail_follows_unlock_scan_and_review() {
+    use StepState::{Available, Current, Done, Locked};
+    let fx = Fixture::new();
+    let mut s = fx.unlocked();
+    let r = s.rail();
+    assert_eq!(r.state(Step::Vault), Done);
+    assert_eq!(r.state(Step::Scan), Available);
+    assert_eq!(r.state(Step::Review), Locked);
+    assert_eq!(r.state(Step::Mask), Locked);
+    assert_eq!(r.state(Step::Restore), Available);
+    done(&mut s, |s| s.scan(fx.input.clone()));
+    let r = s.rail();
+    assert_eq!(r.state(Step::Scan), Done);
+    assert_eq!(r.state(Step::Review), Current);
+    assert_eq!(r.state(Step::Mask), Locked);
+    let card = s.scan_card().expect("scan card");
+    assert_eq!(card.title, "Scanned 3 files: 2 findings");
+    assert_eq!(card.next, Some(Step::Review));
+    s.confirm_review().expect("confirm");
+    let r = s.rail();
+    assert_eq!(r.state(Step::Review), Done);
+    assert_eq!(r.state(Step::Mask), Available);
+    // "Next" and rail clicks switch screens; Vault (Unlock) stays hidden.
+    s.go_to(Step::Mask);
+    assert_eq!(s.shown_screen(), Screen::Mask);
+    s.go_to(Step::Vault);
+    assert_eq!(s.shown_screen(), Screen::Mask);
+}
+
+#[test]
+fn g14_mask_card_holds_counts_and_folder_and_next_is_restore() {
+    use StepState::{Available, Done};
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let out = fx.path("masked");
+    done(&mut s, |s| s.mask(out.clone(), MaskForm::default()));
+    let r = s.rail();
+    assert_eq!(r.state(Step::Review), Done);
+    assert_eq!(r.state(Step::Mask), Done);
+    assert_eq!(r.state(Step::Restore), Available);
+    let card = s.mask_card().expect("mask card");
+    assert!(!card.error);
+    assert_eq!(card.title, "Masked 2 secrets; wrote 3 files");
+    assert_eq!(
+        card.folder,
+        Some(("Output folder", out.display().to_string()))
+    );
+    assert!(
+        card.lines
+            .contains(&"Give this folder to the AI.".to_string())
+    );
+    assert!(card.lines.contains(&"Tokens: 2".to_string()));
+    assert_eq!(card.next, Some(Step::Restore));
+    s.go_to(card.next.expect("next"));
+    assert_eq!(s.shown_screen(), Screen::Restore);
+    let debug = format!("{:?}{card:?}", s.rail());
+    assert_no_secret(debug.as_bytes(), &fx.secrets());
+}
+
+#[test]
+fn g14_clean_restore_card_says_session_forgotten_and_lock_resets() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let (masked, restored) = (fx.path("masked"), fx.path("restored"));
+    done(&mut s, |s| s.mask(masked.clone(), MaskForm::default()));
+    done(&mut s, |s| s.restore(masked, restored.clone(), None, false));
+    assert_eq!(s.rail().state(Step::Restore), StepState::Done);
+    let card = s.restore_card().expect("restore card");
+    assert_eq!(card.lines[0], "session forgotten");
+    assert_eq!(card.title, "Restored 2 tokens; wrote 3 files");
+    assert_eq!(
+        card.folder,
+        Some(("Output folder", restored.display().to_string()))
+    );
+    let mut debug = format!("{:?}{card:?}", s.rail());
+    debug += &format!("{:?}{:?}", s.mask_card(), s.scan_card());
+    assert_no_secret(debug.as_bytes(), &fx.secrets());
+    // Lock now: back to the locked rail, no cards.
+    s.lock();
+    assert_locked_rail(&s);
+    assert!(s.mask_card().is_none() && s.restore_card().is_none() && s.scan_card().is_none());
+}
+
+#[test]
+fn g14_errors_use_the_card_style() {
+    let fx = Fixture::new();
+    let mut s = fx.unlocked();
+    assert!(s.error_card().is_none());
+    s.report(Err(GuiError::NoScan));
+    let card = s.error_card().expect("error card");
+    assert!(card.error);
+    assert_eq!(card.title, GuiError::NoScan.to_string());
+    assert_eq!(card.next, None);
+}

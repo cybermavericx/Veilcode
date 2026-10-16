@@ -169,11 +169,13 @@ crates/veilcode-cli/
 crates/veilcode-gui/src/
 ├── main.rs        # eframe::run_native; NativeOptions; no persistence
 ├── state.rs       # AppState { Locked | Unlocked{vault} }, Screen, actions → Result; NO egui types here (testable: G1–G3)
-├── viewmodel.rs   # FindingRow{preview, path, line, rule, selected}, ReportView… (previews only: G2)
+├── viewmodel.rs   # FindingRow{preview, path, line, rule, selected}, ReportView…, WorkflowRail, ResultCard (D131) (previews only: G2, G14)
 ├── idle.rs        # idle timer (10 min) → lock(), driven by veilcode_core::Clock (the trait moved to core)
 ├── worker.rs      # one background thread + std::sync::mpsc: Argon2 and file I/O never block the UI
+├── theme.rs       # palette (light + dark), spacing, radii → egui Visuals/Style (D132); WCAG contrast test G13 (D133)
 ├── app.rs         # impl eframe::App: route to views, feed input events to idle timer, poll worker
-└── views/         # unlock.rs, scan.rs, review.rs (mandatory before mask, D80), mask.rs, restore.rs, sessions.rs, text_mode.rs
+└── views/         # unlock.rs, help.rs (always enabled, D127), scan.rs, review.rs (mandatory before mask, D80), mask.rs, restore.rs, sessions.rs, text_mode.rs
+                   # chrome.rs: header + veil emblem, step rail, result cards, veil chips (D131, D132), painter only
                    # pickers via egui-file-dialog; no hyperlinks; Text Mode warning on restored text
 crates/veilcode-gui/tests/features.rs   # g4_: cargo metadata feature audit
 ```

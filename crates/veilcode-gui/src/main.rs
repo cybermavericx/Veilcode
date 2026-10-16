@@ -1,12 +1,17 @@
 //! Veilcode desktop app: a thin eframe/egui wrapper over `veilcode-core`.
 //! Native only: no webview, no links, no persistence (SPEC §10.4).
 #![forbid(unsafe_code)]
+// D125: a GUI-subsystem binary on Windows, so no console window opens
+// (Rust reference, "The windows_subsystem attribute"; ignored elsewhere).
+// Startup errors are therefore shown in the window (`app::StartupError`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
 mod idle;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod theme;
 mod viewmodel;
 mod views;
 mod worker;
@@ -14,9 +19,11 @@ mod worker;
 use eframe::egui;
 use state::GuiError;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() -> eframe::Result {
+    // windows_subsystem is ignored off Windows, so this refusal (D105,
+    // D109) still goes to stderr, before any window exists.
     #[cfg(target_os = "linux")]
     if let Err(e) = check_display(
         std::env::var_os("DISPLAY").as_deref(),
@@ -34,11 +41,88 @@ fn main() -> eframe::Result {
         persistence_path: None,
         ..eframe::NativeOptions::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Veilcode",
         options,
-        Box::new(|cc| Ok(Box::new(app::VeilApp::new(&cc.egui_ctx)?))),
-    )
+        Box::new(|cc| {
+            // A window exists: an error file from an earlier failed start is stale.
+            #[cfg(windows)]
+            if let Some(dir) = data_dir() {
+                clear_startup_error(&dir);
+            }
+            Ok(app::start(&cc.egui_ctx))
+        }),
+    );
+    #[cfg(windows)]
+    if let Err(e) = &result {
+        report_startup_failure(e);
+    }
+    // An error makes `main` exit non-zero (and print it where stderr exists).
+    result
+}
+
+/// D129(a): on Windows a `windows`-subsystem process has no stderr, so a
+/// `run_native` failure (no window was possible) is written to
+/// `startup-error.txt` in the local data dir (D81) instead.
+#[cfg(windows)]
+fn report_startup_failure(e: &eframe::Error) {
+    if let Some(dir) = data_dir() {
+        // Nothing else can show the error; a failed write is not reportable.
+        let _ = write_startup_error(&dir, &e.to_string());
+    }
+}
+
+/// Writes `msg` to `<dir>/startup-error.txt`, creating `dir` and replacing
+/// an older file: a fresh `create_new` temp file (D54 style, never opens an
+/// existing path) renamed over it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn write_startup_error(dir: &Path, msg: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let (path, tmp) = (
+        dir.join(STARTUP_ERROR_FILE),
+        dir.join("startup-error.txt.tmp"),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    f.write_all(capped(msg, MAX_STARTUP_ERROR).as_bytes())?;
+    f.write_all(b"\n")?;
+    drop(f);
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
+/// The name of the startup error file (README "Troubleshooting").
+#[cfg_attr(not(windows), allow(dead_code))]
+const STARTUP_ERROR_FILE: &str = "startup-error.txt";
+
+/// The largest startup error text written, in bytes (D130).
+#[cfg_attr(not(windows), allow(dead_code))]
+const MAX_STARTUP_ERROR: usize = 4096;
+
+/// The local data dir (D81): the folder of the default vault file.
+#[cfg(windows)]
+fn data_dir() -> Option<PathBuf> {
+    veilcode_core::default_vault_path().and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+/// `s` cut to at most `max` bytes, on a character boundary.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn capped(s: &str, max: usize) -> &str {
+    let end = (0..=max.min(s.len()))
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    &s[..end]
+}
+
+/// Removes a stale `startup-error.txt` (best effort; errors are ignored).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn clear_startup_error(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(STARTUP_ERROR_FILE));
 }
 
 /// Where local X servers listen (x11rb-protocol `connect_addresses`).
@@ -198,5 +282,41 @@ mod tests {
         assert!(check_display(Some(OsStr::new(":9")), dir.path()).is_ok());
         assert!(check_display(Some(OsStr::new("unix:9")), dir.path()).is_ok());
         assert_refused("localhost:9", dir.path());
+    }
+
+    /// D129(a): the file is created with its folder and replaced on reuse.
+    #[test]
+    fn startup_error_file_is_written_and_replaced() {
+        let tmp = empty_dir();
+        let dir = tmp.path().join("Veilcode").join("data");
+        let path = write_startup_error(&dir, "first error").expect("write");
+        assert_eq!(path, dir.join("startup-error.txt"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "first error\n"
+        );
+        write_startup_error(&dir, "second").expect("rewrite");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "second\n");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .expect("ls")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("startup-error.txt")]);
+    }
+
+    /// D130(e): the text is capped at 4 KiB (on a char boundary), and a
+    /// stale file is removed after a successful start.
+    #[test]
+    fn startup_error_text_is_capped_and_stale_file_removed() {
+        let tmp = empty_dir();
+        let long = "é".repeat(3000); // 6000 bytes
+        let path = write_startup_error(tmp.path(), &long).expect("write");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(text, format!("{}\n", "é".repeat(2048)));
+        clear_startup_error(tmp.path());
+        assert!(!path.exists());
+        clear_startup_error(tmp.path()); // already gone: no panic
+        assert_eq!(std::fs::read_dir(tmp.path()).expect("ls").count(), 0);
     }
 }

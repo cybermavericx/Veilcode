@@ -1,8 +1,9 @@
 //! Scan a folder; findings list with checkboxes and previews.
 
-use super::path_row;
+use super::{chrome, finding_text, path_row};
 use crate::app::{Forms, Target, typed_path};
-use crate::state::{AppState, Screen};
+use crate::state::AppState;
+use crate::viewmodel::FindingRow;
 use eframe::egui;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
@@ -25,14 +26,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         let r = state.scan(input);
         state.report(r);
     }
-    let Some((input, files, findings)) = state.scan_summary() else {
+    let Some(card) = state.scan_card() else {
         return;
     };
     ui.separator();
-    ui.label(format!(
-        "{}: {files} files scanned, {findings} findings",
-        input.display()
-    ));
+    chrome::card(ui, state, &card);
     let Some(view) = state.review() else {
         return;
     };
@@ -43,26 +41,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         .chain(view.ignored.clone())
         .collect();
     for row in rows {
-        let mut ticked = row.ticked;
-        let text = format!(
-            "{}:{}  {}  {}",
-            row.rel_path, row.line, row.key_or_rule, row.preview
-        );
-        let label = if row.ignored {
-            format!("{text}  (ignored by profile)")
-        } else {
-            text
-        };
-        if ui
-            .add_enabled(!row.ignored, egui::Checkbox::new(&mut ticked, label))
-            .changed()
-        {
-            let r = state.set_ticked(&row.id, ticked);
-            state.report(r);
-        }
-    }
-    if ui.button("Review…").clicked() {
-        state.screen = Screen::Review;
+        ui.horizontal(|ui| finding(ui, state, &row));
     }
 }
 
@@ -82,4 +61,23 @@ pub fn profile_row(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         let r = state.set_profile_path(wanted);
         state.report(r);
     }
+}
+
+/// One finding row: a checkbox, its location and its veil chip.
+fn finding(ui: &mut egui::Ui, state: &mut AppState, row: &FindingRow) {
+    let mut ticked = row.ticked;
+    let text = finding_text(row);
+    let label = if row.ignored {
+        format!("{text}  (ignored by profile)")
+    } else {
+        text
+    };
+    if ui
+        .add_enabled(!row.ignored, egui::Checkbox::new(&mut ticked, label))
+        .changed()
+    {
+        let r = state.set_ticked(&row.id, ticked);
+        state.report(r);
+    }
+    chrome::veil_chip(ui, &row.preview);
 }

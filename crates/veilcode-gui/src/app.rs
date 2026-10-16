@@ -1,14 +1,18 @@
 //! The eframe app: routes to the screens, feeds user input to the idle
 //! timer, polls the worker and runs the in-process file picker.
 
-use crate::state::{AppState, Outcome, Screen, wipe_string};
-use crate::views;
+use crate::state::{
+    AppState, ExistsCache, Outcome, Screen, check_local, check_new_vault, existing_ancestor,
+    suggested_vault_path, wipe_string,
+};
+use crate::theme;
+use crate::views::{self, chrome};
 use crate::worker::ThreadRunner;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
-use veilcode_core::{MaskOptions, SystemClock};
+use veilcode_core::{MaskOptions, SystemClock, default_profile_path, default_vault_path};
 
 /// Which form field a file-picker result goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +59,8 @@ pub struct Forms {
     pub purge_confirm: bool,
     /// Set by a "Browse…" button; the app opens the picker.
     pub browse: Option<Target>,
+    /// Whether the typed Create path exists, checked once per change (D130).
+    pub vault_exists: ExistsCache,
 }
 
 impl Default for Forms {
@@ -81,6 +87,7 @@ impl Default for Forms {
             text_keep: false,
             purge_confirm: false,
             browse: None,
+            vault_exists: ExistsCache::default(),
         }
     }
 }
@@ -142,6 +149,122 @@ pub fn typed_path(s: &str) -> Option<PathBuf> {
     (!s.is_empty()).then(|| PathBuf::from(s))
 }
 
+/// Display names of the save and filter entries in the pickers.
+const VAULT_FILES: &str = "Veilcode vault (*.vc)";
+const PROFILE_FILES: &str = "Veilcode profile (*.toml)";
+
+/// D125: the app, or an error screen when it cannot start (on Windows
+/// there is no console that could show the error).
+pub fn start(ctx: &egui::Context) -> Box<dyn eframe::App> {
+    theme::apply(ctx);
+    match VeilApp::new(ctx) {
+        Ok(app) => Box::new(app),
+        Err(e) => Box::new(StartupError(format!(
+            "The background worker could not start: {e}"
+        ))),
+    }
+}
+
+/// Shown instead of the app when it could not start (D125).
+pub struct StartupError(String);
+
+impl eframe::App for StartupError {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.heading("Veilcode could not start");
+            ui.label(&self.0);
+            ui.label("Close this window and start Veilcode again.");
+        });
+    }
+}
+
+/// The tab label of a screen.
+fn tab_label(s: Screen) -> &'static str {
+    match s {
+        Screen::Unlock => "Unlock",
+        Screen::Scan => "Scan",
+        Screen::Review => "Review",
+        Screen::Mask => "Mask",
+        Screen::Restore => "Restore",
+        Screen::Sessions => "Sessions",
+        Screen::TextMode => "Text Mode",
+        Screen::Help => "Help",
+    }
+}
+
+/// D126: a picker for `t`, already open. `create`: the Unlock screen is in
+/// Create mode. No dialog offers to overwrite a file.
+fn open_dialog(t: Target, create: bool) -> FileDialog {
+    let base = FileDialog::new()
+        .show_new_folder_button(false)
+        .allow_file_overwrite(false);
+    let mut d = match t {
+        Target::ScanInput | Target::RestoreIn | Target::MaskOut | Target::RestoreOut => base,
+        Target::VaultFile if !create => in_dir(base, default_vault_path())
+            .add_file_filter_extensions(VAULT_FILES, vec!["vc"])
+            .default_file_filter(VAULT_FILES),
+        Target::VaultFile => save_as(base, suggested_vault_path(), "vault.vc", VAULT_FILES, "vc"),
+        Target::SeparateVault => {
+            let d = save_as(base, default_vault_path(), "project.vc", VAULT_FILES, "vc");
+            use_existing(d)
+        }
+        Target::ProfileFile => {
+            let d = save_as(
+                base,
+                default_profile_path(),
+                "profile.toml",
+                PROFILE_FILES,
+                "toml",
+            );
+            use_existing(d)
+        }
+    };
+    match t {
+        _ if t.picks_existing_dir() => d.pick_directory(),
+        Target::VaultFile if !create => d.pick_file(),
+        _ => d.save_file(),
+    }
+    d
+}
+
+/// Opens in the nearest existing folder of `default`'s folder.
+fn in_dir(d: FileDialog, default: Option<PathBuf>) -> FileDialog {
+    let dir = default
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(existing_ancestor);
+    match dir {
+        Some(dir) => d.initial_directory(dir),
+        None => d,
+    }
+}
+
+/// A save picker that suggests `name` and lists only `ext` files.
+fn save_as(
+    d: FileDialog,
+    default: Option<PathBuf>,
+    name: &str,
+    kind: &str,
+    ext: &str,
+) -> FileDialog {
+    in_dir(d, default)
+        .default_file_name(name)
+        .add_save_extension(kind, ext)
+        .default_save_extension(kind)
+}
+
+/// For files that may exist and are then used, not replaced (a separate
+/// vault is opened, a profile is read and updated): the dialog's
+/// existing-file prompt says so instead of "Overwrite".
+fn use_existing(mut d: FileDialog) -> FileDialog {
+    d = d.allow_file_overwrite(true);
+    let labels = d.labels_mut();
+    labels.overwrite = "Use this file".to_string();
+    labels.overwrite_file_modal_text =
+        "already exists. Veilcode will use it and save its changes into it.".to_string();
+    d
+}
+
 /// The application.
 pub struct VeilApp {
     state: AppState,
@@ -158,26 +281,30 @@ impl VeilApp {
         Ok(VeilApp {
             state: AppState::new(Box::new(runner), Box::new(SystemClock)),
             forms: Forms::default(),
-            dialog: FileDialog::new().show_new_folder_button(false),
+            dialog: FileDialog::new()
+                .show_new_folder_button(false)
+                .allow_file_overwrite(false),
             target: None,
         })
     }
 
+    /// Tabs: Unlock while locked, the vault screens (disabled with a
+    /// tooltip while locked, D127), Help always, and "Lock now".
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let unlocked = self.state.is_unlocked();
         ui.horizontal(|ui| {
-            let screens = [
-                (Screen::Scan, "Scan"),
-                (Screen::Review, "Review"),
-                (Screen::Mask, "Mask"),
-                (Screen::Restore, "Restore"),
-                (Screen::Sessions, "Sessions"),
-                (Screen::TextMode, "Text Mode"),
-            ];
-            for (screen, label) in screens {
-                let selected = self.state.screen == screen;
-                let button = egui::Button::selectable(selected, label);
-                if ui.add_enabled(unlocked, button).clicked() {
+            for screen in Screen::ALL {
+                if screen == Screen::Unlock && unlocked {
+                    continue;
+                }
+                let selected = self.state.shown_screen() == screen;
+                let button = egui::Button::selectable(selected, tab_label(screen));
+                let hint = self.state.tab_hint(screen);
+                let mut r = ui.add_enabled(hint.is_none(), button);
+                if let Some(h) = hint {
+                    r = r.on_disabled_hover_text(h);
+                }
+                if r.clicked() {
                     self.state.screen = screen;
                 }
             }
@@ -194,9 +321,8 @@ impl VeilApp {
                 ui.spinner();
                 ui.label("Working…");
             }
-            if let Some(e) = self.state.error() {
-                ui.colored_label(ui.visuals().error_fg_color, e.to_string());
-            } else if let Some(n) = self.state.notice() {
+            // Errors are shown as cards on the screens (D131).
+            if let Some(n) = self.state.notice() {
                 ui.label(n);
             }
         });
@@ -205,17 +331,29 @@ impl VeilApp {
     fn file_picker(&mut self, ctx: &egui::Context) {
         if let Some(t) = self.forms.browse.take() {
             self.target = Some(t);
-            if t.picks_existing_dir() {
-                self.dialog.pick_directory();
-            } else {
-                self.dialog.save_file();
+            self.dialog = open_dialog(t, self.forms.create);
+        }
+        let dialog = &mut self.dialog;
+        theme::with_dialog_style(ctx, |ctx| {
+            dialog.update(ctx);
+        });
+        let (Some(path), Some(t)) = (self.dialog.take_picked(), self.target) else {
+            return;
+        };
+        self.target = None;
+        if let Err(e) = check_local(&path) {
+            self.state.report(Err(e));
+            return;
+        }
+        // D126: the dialog's path field can still name an existing file.
+        if t == Target::VaultFile && self.forms.create {
+            let r = check_new_vault(&path);
+            if r.is_err() {
+                self.state.report(r);
+                return;
             }
         }
-        self.dialog.update(ctx);
-        if let (Some(path), Some(t)) = (self.dialog.take_picked(), self.target) {
-            *self.forms.field(t) = path.display().to_string();
-            self.target = None;
-        }
+        *self.forms.field(t) = path.display().to_string();
     }
 }
 
@@ -252,7 +390,14 @@ impl eframe::App for VeilApp {
         if ui.ctx().input(|i| i.events.iter().any(is_user_input)) {
             self.state.note_input();
         }
-        egui::Panel::top("nav").show(ui, |ui| self.top_bar(ui));
+        egui::Panel::top("nav").show(ui, |ui| {
+            chrome::header(ui);
+            self.top_bar(ui);
+            ui.separator();
+            let rail = self.state.rail();
+            chrome::rail(ui, &mut self.state, &rail);
+            ui.add_space(4.0);
+        });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {

@@ -1,6 +1,6 @@
 //! Restore: input and output folders, session, "keep session", report.
 
-use super::{count, path_row};
+use super::{chrome, finding_text, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::AppState;
 use eframe::egui;
@@ -47,24 +47,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         );
         state.report(r);
     }
-    let Some(r) = state.restore_view() else {
+    let (Some(card), Some(r)) = (state.restore_card(), state.restore_view()) else {
         return;
     };
     ui.separator();
-    ui.strong(&r.outcome);
-    count(ui, "Files written", r.files_written);
-    count(ui, "Tokens replaced", r.tokens_replaced);
-    count(ui, "New secrets (added since masking)", r.new_secrets.len());
-    count(ui, "New secrets ignored by profile", r.ignored_new_secrets);
-    count(ui, "Unknown tokens", r.unknown);
-    count(ui, "Missing tokens", r.missing);
-    count(ui, "Files not copied", r.not_copied);
-    count(ui, "Tokens in unscanned files", r.tokens_in_unscanned);
+    chrome::card(ui, state, &card);
     for f in &r.new_secrets {
-        ui.label(format!(
-            "new: {}:{}  {}  {}",
-            f.rel_path, f.line, f.key_or_rule, f.preview
-        ));
+        ui.horizontal(|ui| {
+            ui.label(format!("new: {}", finding_text(f)));
+            chrome::veil_chip(ui, &f.preview);
+        });
     }
 }
 

@@ -1,6 +1,6 @@
 //! Mask: output folder, TTL, separate per-project vault (D64), report.
 
-use super::{clear_fields, count, pass_row, path_row};
+use super::{chrome, clear_fields, pass_row, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::{AppState, MaskForm, Screen, SeparateVault};
 use eframe::egui;
@@ -28,17 +28,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
             submit(state, forms, ui.ctx());
         }
     }
-    if let Some(r) = state.mask_view() {
+    if let Some(card) = state.mask_card() {
         ui.separator();
-        ui.label(format!("Session {}", r.session_id));
-        count(ui, "Files written", r.files_written);
-        count(ui, "Secrets masked", r.secrets_masked);
-        count(ui, "Tokens", r.tokens);
-        count(ui, "Ignored by profile (not masked)", r.ignored_by_profile);
-        count(ui, "Files not copied (binary or oversized)", r.not_copied);
-        if let Some(v) = &r.vault {
-            ui.label(format!("Stored in the separate vault {v}"));
-        }
+        chrome::card(ui, state, &card);
     }
 }
 

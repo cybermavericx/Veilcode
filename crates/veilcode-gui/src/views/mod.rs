@@ -1,6 +1,8 @@
 //! One module per screen. Views only read view models and call state
 //! actions; no logic lives here. There are no links anywhere (SPEC §10.4).
 
+pub mod chrome;
+mod help;
 mod mask;
 mod restore;
 mod review;
@@ -11,14 +13,21 @@ mod unlock;
 
 use crate::app::{Forms, Target};
 use crate::state::{AppState, Screen};
+use crate::viewmodel::FindingRow;
 use eframe::egui;
 
-/// Shows the current screen (the unlock screen whenever locked).
+/// Shows the current screen (Unlock while a vault screen is chosen but the
+/// vault is locked; Help is always available, D127).
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
-    if !state.is_unlocked() {
-        state.screen = Screen::Unlock;
+    let screen = state.shown_screen();
+    // The Unlock screen shows its error next to the button (D128).
+    if screen != Screen::Unlock
+        && let Some(card) = state.error_card()
+    {
+        chrome::card(ui, state, &card);
+        ui.add_space(6.0);
     }
-    match state.screen {
+    match screen {
         Screen::Unlock => unlock::show(ui, state, forms),
         Screen::Scan => scan::show(ui, state, forms),
         Screen::Review => review::show(ui, state, forms),
@@ -26,6 +35,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         Screen::Restore => restore::show(ui, state, forms),
         Screen::Sessions => sessions::show(ui, state, forms),
         Screen::TextMode => text_mode::show(ui, state, forms),
+        Screen::Help => help::show(ui),
     }
 }
 
@@ -67,6 +77,11 @@ fn pass_row(ui: &mut egui::Ui, label: &str, value: &mut String, id: &str) {
 /// One "name: value" line of a report.
 fn count(ui: &mut egui::Ui, name: &str, n: usize) {
     ui.label(format!("{name}: {n}"));
+}
+
+/// One finding: "file:line  key or rule", then its preview on a veil chip.
+fn finding_text(row: &FindingRow) -> String {
+    format!("{}:{}  {}", row.rel_path, row.line, row.key_or_rule)
 }
 
 /// Forgets egui's state of these text fields, including the undo history

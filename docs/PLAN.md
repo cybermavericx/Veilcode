@@ -100,7 +100,7 @@ Screens:
 
 Auto-lock after 10 minutes without input. A "Lock now" button is always visible.
 Linux CI installs the eframe system libraries (from the eframe/winit docs, logged in VERIFY_LOG). `net-audit.sh` adds the GUI under `xvfb-run`.
-Tests: G1–G10 (incl. G9b).
+Tests: G1–G14 (incl. G9b).
 Acceptance: standard checks ✔ · net-audit (CLI + GUI) ✔ · `cargo build --release -p veilcode-gui` succeeds on all 3 OS in CI.
 
 ## P7 — App release v0.2.0
