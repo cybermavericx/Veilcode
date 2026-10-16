@@ -1,6 +1,7 @@
 //! One module per screen. Views only read view models and call state
 //! actions; no logic lives here. There are no links anywhere (SPEC §10.4).
 
+mod help;
 mod mask;
 mod restore;
 mod review;
@@ -13,12 +14,10 @@ use crate::app::{Forms, Target};
 use crate::state::{AppState, Screen};
 use eframe::egui;
 
-/// Shows the current screen (the unlock screen whenever locked).
+/// Shows the current screen (Unlock while a vault screen is chosen but the
+/// vault is locked; Help is always available, D127).
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
-    if !state.is_unlocked() {
-        state.screen = Screen::Unlock;
-    }
-    match state.screen {
+    match state.shown_screen() {
         Screen::Unlock => unlock::show(ui, state, forms),
         Screen::Scan => scan::show(ui, state, forms),
         Screen::Review => review::show(ui, state, forms),
@@ -26,6 +25,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         Screen::Restore => restore::show(ui, state, forms),
         Screen::Sessions => sessions::show(ui, state, forms),
         Screen::TextMode => text_mode::show(ui, state, forms),
+        Screen::Help => help::show(ui),
     }
 }
 

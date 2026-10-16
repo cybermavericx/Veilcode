@@ -258,6 +258,13 @@ reopen the vault to see its true state (D67, D72).
   connection, the X11 libraries fall back to TCP on `localhost:6000+N`. That
   window is short, and something must also be listening on that port for the
   connection to succeed.
+- **Network locations in the desktop app (D130).** Typed or pasted network and
+  device paths (`\\server\share`, `\\?\UNC\…`, `\\.\…`, `//host/…`) are refused as
+  text before any file access. Two cases are not covered: a **mapped network
+  drive letter** (for example `Z:`) looks like a local disk and cannot be told
+  apart from its text, and the built-in file dialog can still browse to such
+  drives. Opening a folder there makes Windows talk to that server. Keep
+  projects, vaults and profiles on local disks.
 - **Runtime C libraries are not audited for network use.** The checks above
   cover Rust crates. System libraries loaded at run time (graphics drivers,
   Mesa/libGL, libX11, libwayland) are not inspected; the strace audit only

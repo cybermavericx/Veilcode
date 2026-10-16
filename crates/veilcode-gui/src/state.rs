@@ -43,6 +43,20 @@ pub enum Screen {
     Restore,
     Sessions,
     TextMode,
+    Help,
+}
+
+impl Screen {
+    pub const ALL: [Screen; 8] = [
+        Screen::Unlock,
+        Screen::Scan,
+        Screen::Review,
+        Screen::Mask,
+        Screen::Restore,
+        Screen::Sessions,
+        Screen::TextMode,
+        Screen::Help,
+    ];
 }
 
 /// Why an action was refused or failed. Messages never hold values.
@@ -59,6 +73,11 @@ pub enum GuiError {
     UnknownFinding,
     UnknownSession,
     NoDefaultPath,
+    RelativePath,
+    NetworkPath,
+    PathUnresolved,
+    VaultInProject,
+    ProfileInProject,
     WorkerStopped,
     /// `DISPLAY` is not a live local X server (D105, D109; Linux only).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -88,6 +107,13 @@ impl fmt::Display for GuiError {
             GuiError::UnknownFinding => "finding not found; scan again",
             GuiError::UnknownSession => "session not found",
             GuiError::NoDefaultPath => "no default location on this system; choose a file",
+            GuiError::RelativePath => "the path is relative: use Browse… or a full path",
+            GuiError::NetworkPath => "network and device paths are not supported",
+            GuiError::PathUnresolved => {
+                "could not check that this path is outside the project folder; choose another path"
+            }
+            GuiError::VaultInProject => "keep the vault outside the project folder",
+            GuiError::ProfileInProject => "keep the profile outside the project folder",
             GuiError::WorkerStopped => "the background worker stopped; restart Veilcode",
             GuiError::RemoteDisplay => {
                 "DISPLAY does not name a running local X server, so Veilcode did not start \
@@ -499,17 +525,19 @@ impl AppState {
     }
 
     fn vault_file(&self) -> Result<PathBuf, GuiError> {
-        self.vault_path
-            .clone()
-            .or_else(default_vault_path)
-            .ok_or(GuiError::NoDefaultPath)
+        let path = self.vault_path.clone().or_else(default_vault_path);
+        let path = path.ok_or(GuiError::NoDefaultPath)?;
+        check_local(&path)?;
+        check_absolute(&path)?;
+        Ok(path)
     }
 
     fn profile_file(&self) -> Result<PathBuf, GuiError> {
-        self.profile_path
-            .clone()
-            .or_else(default_profile_path)
-            .ok_or(GuiError::NoDefaultPath)
+        let path = self.profile_path.clone().or_else(default_profile_path);
+        let path = path.ok_or(GuiError::NoDefaultPath)?;
+        check_local(&path)?;
+        check_absolute(&path)?;
+        Ok(path)
     }
 }
 
@@ -553,6 +581,9 @@ impl AppState {
             return Err(GuiError::PassphraseMismatch);
         }
         let path = self.vault_file()?;
+        if confirm.is_some() {
+            check_new_vault(&path)?;
+        }
         if self.is_unlocked() {
             self.lock();
         }
@@ -578,6 +609,8 @@ impl AppState {
     pub fn scan(&mut self, input: PathBuf) -> Result<(), GuiError> {
         self.ready()?;
         let profile = self.profile_file()?;
+        check_local(&input)?;
+        self.keep_outside(&input)?;
         self.run_plain(move || scan_job(input, &profile))
     }
 
@@ -636,6 +669,7 @@ impl AppState {
     ) -> Result<(), GuiError> {
         let input = self.scan.as_ref().ok_or(GuiError::NoScan)?.input.clone();
         let path = self.profile_file()?;
+        self.keep_outside(&input)?;
         self.run_plain(move || {
             let mut p = Profile::load(&path)?;
             if edit(&mut p)? {
@@ -657,6 +691,14 @@ impl AppState {
     pub fn mask(&mut self, out: PathBuf, form: MaskForm) -> Result<(), GuiError> {
         self.ready()?;
         let scan = self.scan.as_ref().ok_or(GuiError::NoScan)?;
+        check_local(&out)?;
+        self.keep_outside(&scan.input)?;
+        if let Some(sv) = &form.separate_vault {
+            check_local(&sv.path)?;
+            check_absolute(&sv.path)?;
+            check_outside(&sv.path, &scan.input, GuiError::VaultInProject)?;
+            check_outside(&sv.path, &out, GuiError::VaultInProject)?;
+        }
         if !scan.confirmed {
             return Err(GuiError::ReviewNotConfirmed);
         }
@@ -686,6 +728,9 @@ impl AppState {
         keep: bool,
     ) -> Result<(), GuiError> {
         self.ready()?;
+        check_local(&input)?;
+        check_local(&out)?;
+        self.keep_outside(&input)?;
         let session = session.map(|s| self.session_id(&s)).transpose()?;
         let (profile, vault) = (self.profile_file()?, self.vault_file()?);
         self.run_vault(move |v| {
@@ -888,4 +933,196 @@ impl MaskJob {
         drop(sv.pass);
         self.run(&mut vault, Some(sv.path))
     }
+}
+
+/// Minimum passphrase length in characters, counted as core counts it
+/// (Unicode scalar values, D8). Core's constant is private.
+const MIN_PASSPHRASE_CHARS: usize = 12;
+
+/// The tooltip of a tab that needs an open vault (D127).
+pub const LOCKED_HINT: &str = "Create or open a vault first";
+
+impl Screen {
+    /// Every screen except Unlock and Help needs an open vault.
+    pub fn needs_vault(self) -> bool {
+        !matches!(self, Screen::Unlock | Screen::Help)
+    }
+}
+
+impl AppState {
+    /// Why the tab of `s` is disabled, if it is (D127).
+    pub fn tab_hint(&self, s: Screen) -> Option<&'static str> {
+        (!self.is_unlocked() && s.needs_vault()).then_some(LOCKED_HINT)
+    }
+
+    /// The screen to draw: Unlock while a locked screen is selected.
+    pub fn shown_screen(&self) -> Screen {
+        match self.tab_hint(self.screen) {
+            Some(_) => Screen::Unlock,
+            None => self.screen,
+        }
+    }
+
+    /// D126: the vault and profile files must not be inside `folder`.
+    fn keep_outside(&self, folder: &Path) -> Result<(), GuiError> {
+        check_outside(&self.vault_file()?, folder, GuiError::VaultInProject)?;
+        check_outside(&self.profile_file()?, folder, GuiError::ProfileInProject)
+    }
+}
+
+/// D128: every reason the Create button is disabled, in display order.
+/// `path` is the vault file to create (`None`: no default location). The
+/// filesystem is asked only when the path changes (D130), never for a
+/// network or device path.
+pub fn create_problems(
+    path: Option<&Path>,
+    pass: &str,
+    confirm: &str,
+    cache: &mut ExistsCache,
+) -> Vec<GuiError> {
+    let mut problems = Vec::new();
+    match path.map(|p| check_local(p).and_then(|()| check_absolute(p)).map(|()| p)) {
+        None => problems.push(GuiError::NoDefaultPath),
+        Some(Err(e)) => problems.push(e),
+        Some(Ok(p)) if cache.exists(p) => problems.push(GuiError::VaultExists),
+        Some(Ok(_)) => {}
+    }
+    if pass.chars().count() < MIN_PASSPHRASE_CHARS {
+        problems.push(GuiError::Core(CoreError::PassphraseTooShort));
+    }
+    if pass != confirm {
+        problems.push(GuiError::PassphraseMismatch);
+    }
+    problems
+}
+
+/// Whether the last asked path exists, re-checked only when it changes
+/// (D130: no filesystem call every frame). Submit always checks again.
+#[derive(Default)]
+pub struct ExistsCache {
+    last: Option<(PathBuf, bool)>,
+    #[cfg(test)]
+    checks: usize,
+}
+
+impl ExistsCache {
+    fn exists(&mut self, p: &Path) -> bool {
+        match &self.last {
+            Some((q, exists)) if q == p => *exists,
+            _ => {
+                #[cfg(test)]
+                {
+                    self.checks += 1;
+                }
+                let exists = std::fs::symlink_metadata(p).is_ok();
+                self.last = Some((p.to_path_buf(), exists));
+                exists
+            }
+        }
+    }
+
+    /// Number of filesystem checks made (D130 test).
+    #[cfg(test)]
+    pub fn fs_checks(&self) -> usize {
+        self.checks
+    }
+}
+
+/// D130: refuses network and device paths as text, before any filesystem
+/// call: two leading separators (`\\server`, `//host`, `\\?\UNC\`, `\\.\`)
+/// or `\??\`. Only the verbatim local-disk form `\\?\X:\` is allowed.
+pub fn check_local(p: &Path) -> Result<(), GuiError> {
+    let s = p.as_os_str().as_encoded_bytes();
+    let sep = |b: Option<&u8>| matches!(b, Some(b'\\' | b'/'));
+    let verbatim_disk = s.len() >= 7
+        && s.starts_with(br"\\?\")
+        && s[4].is_ascii_alphabetic()
+        && s[5] == b':'
+        && s[6] == b'\\';
+    let unc_like = sep(s.first()) && sep(s.get(1));
+    if (unc_like && !verbatim_disk) || s.starts_with(br"\??\") {
+        Err(GuiError::NetworkPath)
+    } else {
+        Ok(())
+    }
+}
+
+/// D126: a vault or profile path must be absolute (typed relative paths
+/// would depend on the folder the app was started from).
+pub fn check_absolute(path: &Path) -> Result<(), GuiError> {
+    if path.is_absolute() {
+        Ok(())
+    } else {
+        Err(GuiError::RelativePath)
+    }
+}
+
+/// D126, D28: Create refuses any existing path (file, folder or link).
+pub fn check_new_vault(path: &Path) -> Result<(), GuiError> {
+    check_local(path)?;
+    check_absolute(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(GuiError::VaultExists),
+        Err(_) => Ok(()),
+    }
+}
+
+/// D126, D130: refuses `file` (with `err`) when it is inside `folder`,
+/// also compared case-insensitively. Fails closed: when `folder` resolves
+/// but `file` cannot be resolved, it is refused too. A `folder` that does
+/// not resolve is left to core, which reports it.
+pub fn check_outside(file: &Path, folder: &Path, err: GuiError) -> Result<(), GuiError> {
+    check_local(file)?;
+    check_local(folder)?;
+    let Some(folder) = resolve(folder) else {
+        return Ok(());
+    };
+    let file = resolve(file).ok_or(GuiError::PathUnresolved)?;
+    let lower = |p: &Path| -> Vec<String> {
+        let parts = p
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase());
+        parts.collect()
+    };
+    if file.starts_with(&folder) || lower(&file).starts_with(&lower(&folder)) {
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+/// `p` with links and `..` resolved by the OS as far as it exists; the
+/// missing rest is resolved lexically. `None` when an entry exists but
+/// cannot be resolved (a dangling link, a file used as a folder, no
+/// access), so a caller can fail closed.
+fn resolve(p: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let (mut tail, mut skip, mut cur) = (Vec::new(), 0usize, p);
+    loop {
+        match std::fs::canonicalize(cur) {
+            Ok(real) => return Some(tail.iter().rev().fold(real, |acc, name| acc.join(name))),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return None,
+            Err(_) if std::fs::symlink_metadata(cur).is_ok() => return None,
+            Err(_) => {}
+        }
+        let (parent, last) = (cur.parent()?, cur.components().next_back()?);
+        match last {
+            Component::ParentDir => skip += 1,
+            Component::Normal(_) if skip > 0 => skip -= 1,
+            Component::Normal(name) => tail.push(name),
+            _ => {}
+        }
+        cur = parent;
+    }
+}
+
+/// D126: Create suggests the default vault file (D81).
+pub fn suggested_vault_path() -> Option<PathBuf> {
+    default_vault_path()
+}
+
+/// The nearest folder of `p` (or `p` itself) that exists: where a picker
+/// opens, since the default folders may not exist yet.
+pub fn existing_ancestor(p: &Path) -> Option<PathBuf> {
+    p.ancestors().find(|a| a.is_dir()).map(Path::to_path_buf)
 }

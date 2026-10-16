@@ -217,6 +217,47 @@ pub fn duration(secs: u64) -> String {
     }
 }
 
+/// The one-line hint on the Unlock screen (D127).
+pub const UNLOCK_HINT: &str =
+    "Create or open a vault first. The other tabs become available after that.";
+
+/// The "How Veilcode works" guide and the Help screen (D127). Fixed text
+/// and default file locations only: no values and no links.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guide {
+    pub steps: [&'static str; 5],
+    pub safety: [&'static str; 4],
+    pub storage: Vec<String>,
+}
+
+/// Builds the guide; `vault` and `profile` are the default locations.
+pub fn guide(vault: Option<&std::path::Path>, profile: Option<&std::path::Path>) -> Guide {
+    let at = |p: Option<&std::path::Path>| {
+        p.map_or("no default location on this system".to_string(), |p| {
+            p.display().to_string()
+        })
+    };
+    Guide {
+        steps: [
+            "Create or open a vault. It holds the real values, encrypted with a key derived from your passphrase.",
+            "Scan a project folder.",
+            "Review what will be masked, and untick false positives.",
+            "Mask into a new folder, then give that folder to the AI.",
+            "Restore the AI's folder into another new folder.",
+        ],
+        safety: [
+            "Your input folder is never modified.",
+            "Every output must be a new folder that does not exist yet.",
+            "Keep the vault and the profile outside the project folder.",
+            "Try Veilcode first with a throwaway copy of a project.",
+        ],
+        storage: vec![
+            format!("Default vault: {}", at(vault)),
+            format!("Default profile: {}", at(profile)),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::duration;

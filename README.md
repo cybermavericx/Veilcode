@@ -288,6 +288,12 @@ Limits you should know about:
   privileges, a compromised build pipeline, or clipboard and backup tools
   copying restored secrets. See the [threat model](docs/THREAT_MODEL.md).
 
+## Troubleshooting
+
+- **The desktop app does not open on Windows.** Look for
+  `startup-error.txt` in `%LOCALAPPDATA%\Cybermavericx\Veilcode\data`. It
+  holds the error that stopped the window from opening.
+
 ## Prior art
 
 Other projects already work on masking sensitive data before it reaches an

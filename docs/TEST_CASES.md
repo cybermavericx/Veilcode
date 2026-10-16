@@ -539,6 +539,29 @@ A strace run of the release binary with `DISPLAY=:N` and no server makes no `AF_
 Type: auto
 With a deferred runner: start a scan, a mask and a `restore_text`, lock, then deliver each result. Pass when no vault, view model or text comes back, every lock path ran the wipe (`key_wipes` and form wipes incremented), and the stale restored text was wiped.
 
+### G11 — guide and locked-state hints (D127)
+Type: auto
+App-state tests.
+
+Pass when:
+- while locked, every disabled screen reports the hint "Create or open a vault first";
+- the Help screen is reachable while locked and while unlocked;
+- the guide model has the 5 steps and the safety rules;
+- the Debug output of the guide model passes `assert_no_secret` (trivially) and contains no `http` substring.
+### G12 — vault and profile path safety (D126, D128)
+Type: auto
+App-state tests with temp dirs.
+
+Pass when the following are refused with the right message before any core call:
+- Create with an existing file path, including a file named like `wp-config.php`;
+- a relative path;
+- a vault path inside the folder being scanned;
+- a profile path inside the folder being scanned.
+
+Also check that:
+- the suggested Create path is `<local data dir>/vault.vc`;
+- Create is disabled until path, length and match are all valid;
+- each unmet condition yields its message.
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.
