@@ -17,10 +17,13 @@ pub struct MaskReport {
     pub secrets_masked: usize,
     /// Distinct tokens in the session.
     pub tokens: usize,
-    /// Input entries not copied (binary, oversized, symlink, excluded,
-    /// non-UTF-8 name), sorted.
     /// Findings the profile marks as ignored that were not masked (D78).
     pub ignored_by_profile: usize,
+    /// Selected findings not masked because their span already is a token
+    /// of the chosen prefix or of a prefix in the vault (D138, G4).
+    pub already_tokens: usize,
+    /// Input entries not copied (binary, oversized, symlink, excluded,
+    /// non-UTF-8 name), sorted.
     pub not_copied: Vec<String>,
 }
 

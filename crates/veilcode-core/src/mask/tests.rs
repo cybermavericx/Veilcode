@@ -3,6 +3,7 @@
 use super::*;
 use crate::error::CoreError;
 use crate::test_support::*;
+use crate::token::TokenPrefix;
 use std::path::PathBuf;
 
 struct Dirs {
@@ -394,4 +395,83 @@ fn m11_unix_modes_and_unsafe_parent() {
     chmod(&open, 0o1777);
     mask(&report, &Selection::All, &d.input, &out, &mut vault, &opts).expect("sticky ok");
     assert_eq!(mode(&out), 0o700);
+}
+
+fn opts_with(prefix: &str) -> MaskOptions {
+    MaskOptions {
+        token_prefix: TokenPrefix::parse(prefix).expect("prefix"),
+        ..MaskOptions::default()
+    }
+}
+
+#[test]
+fn s8c_tokens_of_vault_prefixes_are_not_masked_again() {
+    let d = dirs();
+    let mut vault = test_vault(d.tmp.path());
+    let pw1 = fake_password();
+    write_tree(
+        &d.input,
+        &[(".env", format!("DB_PASSWORD={pw1}\n").as_bytes())],
+    );
+    let first = scan_dir(&d.input);
+    mask(
+        &first,
+        &Selection::All,
+        &d.input,
+        &d.out,
+        &mut vault,
+        &opts_with("Infra_Mask_"),
+    )
+    .expect("first mask");
+    let masked = String::from_utf8(read(&d.out, ".env")).expect("utf8");
+    let token = masked
+        .trim_end()
+        .trim_start_matches("DB_PASSWORD=")
+        .to_string();
+    assert!(token.starts_with("Infra_Mask_DB_PASSWORD_"), "{token}");
+    // A second project holds that token; a plain scan (no vault) reports it.
+    let (input2, out2) = (d.tmp.path().join("in2"), d.tmp.path().join("out2"));
+    let pw2 = fake_password();
+    let env = format!("OLD_PASSWORD={token}\nNEW_PASSWORD={pw2}\n");
+    write_tree(&input2, &[(".env", env.as_bytes())]);
+    let report = scan_dir(&input2);
+    assert_eq!(report.findings.len(), 2, "plain scan sees the custom token");
+    let m = mask(
+        &report,
+        &Selection::All,
+        &input2,
+        &out2,
+        &mut vault,
+        &MaskOptions::default(),
+    )
+    .expect("second mask");
+    assert_eq!((m.secrets_masked, m.already_tokens), (1, 1));
+    let out = String::from_utf8(read(&out2, ".env")).expect("utf8");
+    let want = format!("OLD_PASSWORD={token}\nNEW_PASSWORD=VEILCODE_NEW_PASSWORD_");
+    assert!(out.starts_with(&want), "{out}");
+    assert_no_secret(out.as_bytes(), &[&pw1, &pw2]);
+}
+
+#[test]
+fn s8c_tokens_of_the_chosen_prefix_are_not_masked_again() {
+    let d = dirs();
+    let mut vault = test_vault(d.tmp.path());
+    let pw = fake_password();
+    let env = format!("API_KEY=Zed_Mask_API_KEY_abcdef01\nDB_PASSWORD={pw}\n");
+    write_tree(&d.input, &[(".env", env.as_bytes())]);
+    let report = scan_dir(&d.input);
+    assert_eq!(report.findings.len(), 2);
+    let m = mask(
+        &report,
+        &Selection::All,
+        &d.input,
+        &d.out,
+        &mut vault,
+        &opts_with("Zed_Mask_"),
+    )
+    .expect("mask");
+    assert_eq!((m.secrets_masked, m.already_tokens), (1, 1));
+    let out = String::from_utf8(read(&d.out, ".env")).expect("utf8");
+    let want = "API_KEY=Zed_Mask_API_KEY_abcdef01\nDB_PASSWORD=Zed_Mask_DB_PASSWORD_";
+    assert!(out.starts_with(want), "{out}");
 }

@@ -9,14 +9,11 @@ use crate::report::{KeptReason, RestoreReport};
 use crate::scan::walk::{self, Class, FileEntry};
 use crate::scan::{self, ScanOptions, ScanReport, Scanner};
 use crate::secret::SecretBytes;
-use crate::token::{NAME_MAX, Token, token_regex};
+use crate::token::{KnownPrefixes, MAX_TOKEN_LEN, Token, shape_ends};
 use crate::vault::{Session, SessionId, Vault};
 use std::collections::BTreeSet;
 use std::path::Path;
 use zeroize::Zeroizing;
-
-const PREFIX: &[u8] = b"VEILCODE_";
-const HEX_LEN: usize = 8;
 
 /// A walked regular file with its validated path.
 type InputFile = (RelPath, FileEntry);
@@ -44,7 +41,7 @@ pub fn restore(
     profile: &Profile,
 ) -> Result<RestoreReport> {
     let session = require_session(vault, session, None)?;
-    let scanner = Scanner::new(profile)?;
+    let scanner = Scanner::with_prefixes(profile, vault.known_prefixes())?;
     let mut scanned = ScanReport::default();
     let (dirs, files) = walk_input(input, &session.scan_options, &mut scanned)?;
     let out = OutputDir::prepare(out, input)?;
@@ -79,6 +76,7 @@ fn restore_tree(
         out,
         scanner: tree.scanner,
         vault,
+        known: tree.scanner.known(),
     };
     for (rel, file) in tree.files {
         restore_file(&ctx, rel, file, &mut scanned, &mut acc)?;
@@ -218,6 +216,7 @@ struct FileCtx<'a> {
     out: &'a OutputDir,
     scanner: &'a Scanner<'a>,
     vault: &'a Vault,
+    known: &'a KnownPrefixes,
 }
 
 /// Restores one file: text gets tokens replaced (and is scanned for new
@@ -232,7 +231,7 @@ fn restore_file(
     match walk::classify(&file.path, file.ident)? {
         Class::Text(content) => {
             scan::scan_text(ctx.scanner, file, &content, scanned);
-            let restored = replace_tokens(&content, ctx.vault);
+            let restored = replace_tokens(&content, ctx.vault, ctx.known);
             // D55: a file that received a real value is owner-only.
             let mode = if restored.seen.is_empty() {
                 file.mode
@@ -244,7 +243,7 @@ fn restore_file(
             acc.unknown.extend(restored.unknown);
         }
         Class::Binary | Class::Oversized => {
-            let mut counter = TokenCounter::new(ctx.vault);
+            let mut counter = TokenCounter::new(ctx.vault, ctx.known);
             paths::copy_new(ctx.out, rel, file, &mut |chunk| counter.feed(chunk))?;
             acc.tokens_in_unscanned += counter.count;
         }
@@ -258,21 +257,10 @@ fn restore_file(
 }
 
 /// Replaces every vault token in `content` with its value, left to right
-/// and non-overlapping. D29: a match is tried at every `VEILCODE_` offset,
-/// and a candidate counts only if it is a vault key.
-pub(crate) fn replace_tokens(content: &[u8], vault: &Vault) -> Restored {
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(off) = find(&content[from..], PREFIX) {
-        let start = from + off;
-        match vault_token_at(content, start, vault) {
-            Some((end, token, value)) => {
-                found.push((start, end, token, value));
-                from = end;
-            }
-            None => from = start + 1,
-        }
-    }
+/// and non-overlapping. D29, D138: a match is tried at every offset where a
+/// `known` prefix starts, and a candidate counts only if it is a vault key.
+pub(crate) fn replace_tokens(content: &[u8], vault: &Vault, known: &KnownPrefixes) -> Restored {
+    let found = vault_tokens(content, vault, known);
     // L1: exact size, so a buffer holding values never reallocates.
     let grow: usize = found.iter().map(|f| f.3.len()).sum();
     let shrink: usize = found.iter().map(|f| f.1 - f.0).sum();
@@ -285,7 +273,7 @@ pub(crate) fn replace_tokens(content: &[u8], vault: &Vault) -> Restored {
     }
     bytes.extend_from_slice(&content[copied..]);
     let spans: Vec<(usize, usize)> = found.iter().map(|f| (f.0, f.1)).collect();
-    let unknown = unknown_tokens(content, &spans);
+    let unknown = unknown_tokens(content, &spans, known);
     Restored {
         bytes,
         seen: found.into_iter().map(|f| f.2).collect(),
@@ -293,21 +281,39 @@ pub(crate) fn replace_tokens(content: &[u8], vault: &Vault) -> Restored {
     }
 }
 
-/// The longest possible token: prefix + 24 NAME chars + separator + 8 hex.
-const MAX_TOKEN_LEN: usize = PREFIX.len() + NAME_MAX + 1 + HEX_LEN;
+/// One vault token found in a text: start, end, token and value.
+type Found<'v> = (usize, usize, Token, &'v SecretBytes);
 
-/// D71: counts vault tokens (token regex) in a copied file's chunks,
-/// carrying the last bytes over so a token split across chunks is found.
+/// Every vault token in `content`, left to right and non-overlapping.
+fn vault_tokens<'v>(content: &[u8], vault: &'v Vault, known: &KnownPrefixes) -> Vec<Found<'v>> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(start) = known.next_start(content, from) {
+        match vault_token_at(content, start, vault, known) {
+            Some((end, token, value)) => {
+                found.push((start, end, token, value));
+                from = end;
+            }
+            None => from = start + 1,
+        }
+    }
+    found
+}
+
+/// D71: counts vault tokens in a copied file's chunks, carrying the last
+/// `MAX_TOKEN_LEN - 1` bytes over so a token split across chunks is found.
 struct TokenCounter<'v> {
     vault: &'v Vault,
+    known: &'v KnownPrefixes,
     tail: Vec<u8>,
     count: usize,
 }
 
 impl<'v> TokenCounter<'v> {
-    fn new(vault: &'v Vault) -> Self {
+    fn new(vault: &'v Vault, known: &'v KnownPrefixes) -> Self {
         TokenCounter {
             vault,
+            known,
             tail: Vec::new(),
             count: 0,
         }
@@ -317,63 +323,64 @@ impl<'v> TokenCounter<'v> {
         let mut buf = std::mem::take(&mut self.tail);
         let carried = buf.len();
         buf.extend_from_slice(chunk);
-        if let Some(re) = token_regex() {
-            let vault = self.vault;
-            let is_vault_token = |m: &[u8]| {
-                let token = std::str::from_utf8(m).ok().and_then(Token::parse);
-                token.is_some_and(|t| vault.value(&t).is_some())
-            };
-            let hits = re.find_iter(&buf).filter(|m| m.end() > carried);
-            self.count += hits.filter(|m| is_vault_token(m.as_bytes())).count();
-        }
+        let hits = vault_tokens(&buf, self.vault, self.known);
+        self.count += hits.iter().filter(|f| f.1 > carried).count();
         let keep = buf.len().min(MAX_TOKEN_LEN - 1);
         self.tail = buf[buf.len() - keep..].to_vec();
     }
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// The longest vault token starting at `start`, with its end and value.
+/// The longest vault token at offset `start`, over every known prefix that
+/// starts there, with its end and value.
 fn vault_token_at<'v>(
     content: &[u8],
     start: usize,
     vault: &'v Vault,
+    known: &KnownPrefixes,
 ) -> Option<(usize, Token, &'v SecretBytes)> {
-    let name_at = start + PREFIX.len();
-    let is_name = |b: &&u8| b.is_ascii_uppercase() || b.is_ascii_digit() || **b == b'_';
-    let run = content
-        .get(name_at..)?
-        .iter()
-        .take(NAME_MAX)
-        .take_while(is_name)
-        .count();
-    for name_len in (1..=run).rev() {
-        let end = name_at + name_len + 1 + HEX_LEN;
-        let Some(candidate) = content.get(start..end) else {
-            continue;
-        };
-        let token = std::str::from_utf8(candidate).ok().and_then(Token::parse);
-        if let Some(token) = token
-            && let Some(value) = vault.value(&token)
+    let mut best: Option<(usize, Token, &'v SecretBytes)> = None;
+    for prefix in known.at(content, start) {
+        let name_at = start + prefix.as_str().len();
+        let hit = shape_ends(content, name_at, prefix)
+            .into_iter()
+            .find_map(|end| {
+                let text = std::str::from_utf8(&content[start..end]).ok()?;
+                let token = Token::parse_with(text, prefix)?;
+                vault.value(&token).map(|v| (end, token, v))
+            });
+        if let Some(hit) = hit
+            && best.as_ref().is_none_or(|b| hit.0 > b.0)
         {
-            return Some((end, token, value));
+            best = Some(hit);
         }
     }
-    None
+    best
 }
 
-/// Token-shaped matches that overlap no replaced span (SPEC §6.2 step 3).
-fn unknown_tokens(content: &[u8], spans: &[(usize, usize)]) -> Vec<String> {
-    let Some(re) = token_regex() else {
-        return Vec::new();
-    };
-    re.find_iter(content)
-        .filter(|m| !spans.iter().any(|&(s, e)| m.start() < e && s < m.end()))
-        .map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned())
-        .collect()
+/// Token-shaped strings of a known prefix that overlap no replaced span
+/// (SPEC §6.2 step 3); at each start, the longest shape is taken.
+fn unknown_tokens(content: &[u8], spans: &[(usize, usize)], known: &KnownPrefixes) -> Vec<String> {
+    let mut unknown = Vec::new();
+    let mut from = 0;
+    while let Some(start) = known.next_start(content, from) {
+        let ends = known.at(content, start).filter_map(|p| {
+            let name_at = start + p.as_str().len();
+            shape_ends(content, name_at, p).first().copied()
+        });
+        let Some(end) = ends.max() else {
+            from = start + 1;
+            continue;
+        };
+        if !spans.iter().any(|&(s, e)| start < e && s < end) {
+            unknown.push(String::from_utf8_lossy(&content[start..end]).into_owned());
+        }
+        from = end;
+    }
+    unknown
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod prefix_tests;

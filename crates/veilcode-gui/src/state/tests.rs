@@ -1,5 +1,6 @@
 //! G1, G2, G3, G7 and G10: the app-state layer without a window (TEST_CASES P6).
 
+use super::viewer::{MASK, viewer_message, viewer_wipes};
 use super::*;
 use crate::app::{Forms, form_wipes, sync_lock};
 use crate::test_support::{
@@ -9,7 +10,7 @@ use crate::viewmodel::FindingRow;
 use crate::worker::{Deferred, InlineRunner};
 use std::path::Path;
 use tempfile::TempDir;
-use veilcode_core::IgnoreEntry;
+use veilcode_core::{FindingView, IgnoreEntry};
 
 const T0: u64 = 1_800_000_000;
 
@@ -994,4 +995,242 @@ fn g14_errors_use_the_card_style() {
     assert!(card.error);
     assert_eq!(card.title, GuiError::NoScan.to_string());
     assert_eq!(card.next, None);
+}
+
+// ---- G16: rescan (D136) ----
+
+#[test]
+fn g16_rescan_needs_a_scan_and_an_idle_worker() {
+    let fx = Fixture::new();
+    let mut s = fx.unlocked();
+    assert!(!s.can_rescan());
+    assert!(matches!(s.rescan(), Err(GuiError::NoScan)));
+    let mut slow = Slow::unlocked(&fx);
+    slow.run(|s| s.scan(fx.input.clone()));
+    assert!(slow.s.can_rescan());
+    slow.s.rescan().expect("rescan starts");
+    assert!(!slow.s.can_rescan(), "enabled while busy");
+    assert!(matches!(slow.s.rescan(), Err(GuiError::Busy)));
+    slow.frame();
+    assert!(slow.s.can_rescan());
+}
+
+#[test]
+fn g16_rescan_starts_a_fresh_review() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    let id = row(&review(&s), ".env").id.clone();
+    s.set_ticked(&id, false).expect("untick");
+    s.confirm_review().expect("confirm");
+    done(&mut s, |s| s.view_finding(&id));
+    assert!(s.viewer().is_some());
+    let key = fake_password();
+    let env = format!("API_KEY={key}\n");
+    write_tree(&fx.input, &[("new/.env", env.as_bytes())]);
+    done(&mut s, |s| s.rescan());
+    assert!(s.viewer().is_none(), "viewer of the old scan kept");
+    assert!(!s.review_confirmed());
+    let v = review(&s);
+    assert_eq!(v.confirm_label, "Mask 3 secrets");
+    assert!(v.groups.iter().flat_map(|g| &g.rows).all(|r| r.ticked));
+    assert_eq!(row(&v, "new/.env").key_or_rule, "API_KEY");
+    let card = s.scan_card().expect("card");
+    assert!(card.title.ends_with(": 3 findings"), "{}", card.title);
+    let mut secrets = fx.secrets();
+    secrets.push(key);
+    assert_no_secret(format!("{v:?}{card:?}").as_bytes(), &secrets);
+}
+
+#[test]
+fn g16b_failed_rescan_keeps_the_review_and_viewer() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    let id = row(&review(&s), ".env").id.clone();
+    s.set_ticked(&id, false).expect("untick");
+    s.confirm_review().expect("confirm");
+    done(&mut s, |s| s.view_finding(&id));
+    std::fs::rename(&fx.input, fx.path("moved")).expect("move input away");
+    s.rescan().expect("rescan starts");
+    s.poll();
+    assert!(s.error().is_some(), "the rescan should fail");
+    assert!(!row(&review(&s), ".env").ticked, "untick lost");
+    assert!(s.review_confirmed(), "confirmation lost");
+    assert!(s.viewer().is_some(), "viewer closed by a failed rescan");
+}
+
+// ---- G17: finding viewer (D137) ----
+
+/// The text the viewer draws for every part of every line.
+/// Every text the viewer state holds (not what it draws).
+fn held(v: &Viewer) -> String {
+    let ViewerBody::Lines(lines) = v.body() else {
+        return String::new();
+    };
+    let parts = lines.iter().flat_map(|l| l.parts.iter());
+    parts.map(|p| p.text()).collect::<Vec<_>>().join("|")
+}
+
+fn shown(v: &Viewer) -> String {
+    let ViewerBody::Lines(lines) = v.body() else {
+        panic!("viewer has no lines");
+    };
+    let parts = lines.iter().flat_map(|l| l.parts.iter());
+    parts.map(|p| v.shown(p)).collect::<Vec<_>>().join("|")
+}
+
+#[test]
+fn g17_viewer_is_refused_while_locked_and_for_unknown_ids() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    assert!(matches!(
+        s.view_finding("nope"),
+        Err(GuiError::UnknownFinding)
+    ));
+    let id = row(&review(&s), ".env").id.clone();
+    s.lock();
+    assert!(matches!(s.view_finding(&id), Err(GuiError::Locked)));
+}
+
+#[test]
+fn g17_value_is_masked_until_reveal_and_hidden_again() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    let env_id = row(&review(&s), ".env").id.clone();
+    let js_id = row(&review(&s), "src/config.js").id.clone();
+    done(&mut s, |s| s.view_finding(&env_id));
+    let v = s.viewer().expect("viewer");
+    assert_eq!(v.title(), ".env:1");
+    assert!(!v.revealed());
+    assert_eq!(shown(v), format!("DB_PASSWORD=|{MASK}|APP_NAME=demo"));
+    // H1: before Reveal the state holds no value bytes at all.
+    assert_no_secret(format!("{v:?}").as_bytes(), &fx.secrets());
+    assert_no_secret(held(v).as_bytes(), &fx.secrets());
+    done(&mut s, |s| s.toggle_reveal());
+    let v = s.viewer().expect("viewer");
+    assert!(v.revealed());
+    assert_eq!(
+        shown(v),
+        format!("DB_PASSWORD=|{}|APP_NAME=demo", fx.password)
+    );
+    assert!(
+        held(v).contains(&fx.password),
+        "Reveal did not read the value"
+    );
+    assert_no_secret(format!("{v:?}").as_bytes(), &fx.secrets());
+    s.toggle_reveal().expect("hide");
+    let v = s.viewer().expect("viewer");
+    assert!(!v.revealed());
+    assert_no_secret(held(v).as_bytes(), &fx.secrets());
+    done(&mut s, |s| s.toggle_reveal());
+    done(&mut s, |s| s.view_finding(&js_id));
+    let v = s.viewer().expect("viewer");
+    assert!(!v.revealed(), "another finding opens hidden");
+    assert_eq!(shown(v), format!("const token = \"|{MASK}|\";"));
+    let wipes = viewer_wipes();
+    s.close_viewer();
+    assert!(s.viewer().is_none());
+    assert_eq!(viewer_wipes(), wipes + 1);
+}
+
+#[test]
+fn g17_lock_drops_the_viewer_and_stale_views_are_wiped() {
+    let fx = Fixture::new();
+    let mut slow = Slow::unlocked(&fx);
+    slow.run(|s| s.scan(fx.input.clone()));
+    let id = row(&slow.s.review().expect("review"), ".env").id.clone();
+    slow.run(|s| s.view_finding(&id));
+    slow.run(|s| s.toggle_reveal());
+    let wipes = viewer_wipes();
+    slow.s.lock();
+    assert!(slow.s.viewer().is_none());
+    assert_eq!(viewer_wipes(), wipes + 1, "lock did not wipe the viewer");
+    let mut slow = Slow::unlocked(&fx);
+    slow.run(|s| s.scan(fx.input.clone()));
+    slow.s.view_finding(&id).expect("view starts");
+    let wipes = viewer_wipes();
+    slow.lock_then_deliver();
+    assert!(slow.s.viewer().is_none(), "stale view came back");
+    assert_eq!(viewer_wipes(), wipes + 1, "stale view not wiped");
+}
+
+#[test]
+fn g17_viewer_shows_too_large_and_changed_files() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    let id = row(&review(&s), ".env").id.clone();
+    write_tree(&fx.input, &[(".env", b"changed\n")]);
+    done(&mut s, |s| s.view_finding(&id));
+    let v = s.viewer().expect("viewer");
+    assert!(
+        matches!(v.body(), ViewerBody::Message(m) if m.starts_with("file changed since the scan"))
+    );
+    assert_eq!(
+        viewer_message(&FindingView::TooLarge),
+        "file too large to preview (over 2 MiB)"
+    );
+}
+
+// ---- G18: placeholder prefix (D138) ----
+
+#[test]
+fn g18_prefix_field_defaults_and_validates() {
+    assert_eq!(MaskForm::default().token_prefix, "VEILCODE_");
+    assert!(prefix_problem("VEILCODE_").is_none());
+    assert!(prefix_problem("Infra_Mask_").is_none());
+    for bad in ["", "Infra_Mask", "1x_", "a b_"] {
+        let p = prefix_problem(bad).expect(bad);
+        assert!(p.to_string().ends_with("ending with _"), "{bad}: {p}");
+    }
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let form = MaskForm {
+        token_prefix: "bad".to_string(),
+        ..MaskForm::default()
+    };
+    let r = s.mask(fx.path("masked"), form);
+    assert!(matches!(r, Err(GuiError::Core(CoreError::BadTokenPrefix))));
+    assert!(!s.is_busy() && !fx.path("masked").exists());
+}
+
+#[test]
+fn g18_custom_prefix_reaches_the_masked_output() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let form = MaskForm {
+        token_prefix: "Infra_Mask_".to_string(),
+        ..MaskForm::default()
+    };
+    done(&mut s, |s| s.mask(fx.path("masked"), form));
+    let env = read(&fx.path("masked").join(".env"));
+    assert!(
+        env.starts_with("DB_PASSWORD=Infra_Mask_DB_PASSWORD_"),
+        "{env}"
+    );
+    let js = read(&fx.path("masked").join("src/config.js"));
+    assert!(
+        js.contains("Infra_Mask_") && !js.contains("VEILCODE_"),
+        "{js}"
+    );
+    assert_no_secret(format!("{env}{js}").as_bytes(), &fx.secrets());
+}
+
+#[test]
+fn g18_mask_card_counts_findings_that_already_are_tokens() {
+    let fx = Fixture::new();
+    let env = b"API_KEY=Infra_Mask_API_KEY_abcdef01\n";
+    write_tree(&fx.input, &[("old/.env", env)]);
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let form = MaskForm {
+        token_prefix: "Infra_Mask_".to_string(),
+        ..MaskForm::default()
+    };
+    done(&mut s, |s| s.mask(fx.path("masked"), form));
+    assert_eq!(s.mask_view().expect("view").already_tokens, 1);
+    let card = s.mask_card().expect("card");
+    let line = "Already placeholder tokens (not masked again): 1";
+    assert!(card.lines.iter().any(|l| l == line), "{:?}", card.lines);
+    assert_eq!(read(&fx.path("masked").join("old/.env")).as_bytes(), env);
 }

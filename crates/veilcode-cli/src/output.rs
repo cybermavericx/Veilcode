@@ -115,6 +115,12 @@ pub fn mask(r: &MaskReport, ttl_days: u32) {
             r.ignored_by_profile
         );
     }
+    if r.already_tokens > 0 {
+        eprintln!(
+            "{} findings already were placeholder tokens (not masked again)",
+            r.already_tokens
+        );
+    }
     if !r.not_copied.is_empty() {
         eprintln!(
             "{} entries not copied (binary/oversized need --include-unscanned)",

@@ -4,7 +4,7 @@ use crate::error::{CoreError, Result};
 use crate::hex;
 use crate::scan::ScanOptions;
 use crate::secret::SecretBytes;
-use crate::token::Token;
+use crate::token::{Token, TokenPrefix};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -93,6 +93,8 @@ pub(crate) struct Entry {
     pub(crate) value: SecretBytes,
     pub(crate) name: String,
     pub(crate) rule_id: String,
+    /// The prefix the token was made with (D138).
+    pub(crate) prefix: TokenPrefix,
 }
 
 impl fmt::Debug for Entry {
@@ -101,6 +103,7 @@ impl fmt::Debug for Entry {
             .field("value", &self.value)
             .field("name", &self.name)
             .field("rule_id", &self.rule_id)
+            .field("prefix", &self.prefix)
             .finish()
     }
 }
@@ -125,6 +128,10 @@ struct WireEntry {
     value_hex: String,
     name: String,
     rule_id: String,
+    /// D138: written only when not `VEILCODE_`; absent reads as `VEILCODE_`,
+    /// so a default-prefix vault keeps the pre-v1.4 JSON shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
 }
 
 impl VaultData {
@@ -153,13 +160,18 @@ impl VaultData {
         }
         let mut entries = BTreeMap::new();
         for (t, w) in &wire.entries {
-            let token = Token::parse(t).ok_or(CoreError::VaultOpen)?;
+            let prefix = match &w.prefix {
+                Some(p) => TokenPrefix::parse(p).map_err(|_| CoreError::VaultOpen)?,
+                None => TokenPrefix::default(),
+            };
+            let token = Token::parse_with(t, &prefix).ok_or(CoreError::VaultOpen)?;
             let mut value = hex::decode(&w.value_hex).ok_or(CoreError::VaultOpen)?;
             let entry = Entry {
                 // Moves the buffer out (no copy); the emptied wrapper drops.
                 value: SecretBytes::new(std::mem::take(&mut *value)),
                 name: w.name.clone(),
                 rule_id: w.rule_id.clone(),
+                prefix,
             };
             entries.insert(token, entry);
         }
@@ -176,6 +188,7 @@ impl From<&Entry> for WireEntry {
             value_hex: hex::encode(e.value.expose()),
             name: e.name.clone(),
             rule_id: e.rule_id.clone(),
+            prefix: (!e.prefix.is_default()).then(|| e.prefix.as_str().to_string()),
         }
     }
 }
@@ -220,6 +233,62 @@ mod tests {
         ] {
             let err = VaultData::from_json(&json(tok, id)).err();
             assert!(matches!(err, Some(CoreError::VaultOpen)), "{tok} {id}");
+        }
+    }
+
+    /// A plaintext with one session and one entry `token` (with `prefix`
+    /// as the raw JSON member text, or none).
+    fn with_entry(token: &str, prefix: Option<&str>) -> Vec<u8> {
+        let member = prefix.map_or_else(String::new, |p| format!(r#","prefix":{p}"#));
+        format!(
+            r#"{{"version":1,"sessions":[{{"id":"0123456789abcdef","created":1,"expires_at":2,"source_label":"s","scan_options":{{"no_default_excludes":false}},"tokens":["{token}"]}}],"entries":{{"{token}":{{"value_hex":"6869","name":"k","rule_id":"r"{member}}}}}}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn t10_entry_without_prefix_reads_as_default_and_writes_without_it() {
+        let data = VaultData::from_json(&with_entry("VEILCODE_K_ab000000", None)).expect("old");
+        let (token, entry) = data.entries.iter().next().expect("entry");
+        assert_eq!(token.as_str(), "VEILCODE_K_ab000000");
+        assert_eq!(entry.prefix, TokenPrefix::default());
+        assert_eq!(entry.value.expose(), b"hi");
+        let json = String::from_utf8(data.to_json().expect("json").to_vec()).expect("utf8");
+        assert!(!json.contains("prefix"), "default prefix written: {json}");
+    }
+
+    #[test]
+    fn t10_custom_prefix_round_trips() {
+        let raw = with_entry("Infra_Mask_K_ab000000", Some(r#""Infra_Mask_""#));
+        let data = VaultData::from_json(&raw).expect("custom");
+        let entry = data.entries.values().next().expect("entry");
+        assert_eq!(entry.prefix.as_str(), "Infra_Mask_");
+        let json = data.to_json().expect("json");
+        assert!(String::from_utf8_lossy(&json).contains(r#""prefix":"Infra_Mask_""#));
+        let again = VaultData::from_json(&json).expect("reopen");
+        let keys: Vec<&str> = again.entries.keys().map(Token::as_str).collect();
+        assert_eq!(keys, vec!["Infra_Mask_K_ab000000"]);
+        assert_eq!(
+            again.sessions[0].tokens[0].as_str(),
+            "Infra_Mask_K_ab000000"
+        );
+    }
+
+    #[test]
+    fn t10_bad_prefix_or_mismatched_key_is_the_generic_error() {
+        for (token, prefix) in [
+            ("Infra_Mask_K_ab000000", None),
+            ("Infra_Mask_K_ab000000", Some(r#""VEILCODE_""#)),
+            ("VEILCODE_K_ab000000", Some(r#""Infra_Mask_""#)),
+            ("Infra_Mask_K_ab000000", Some(r#""Infra_Mask""#)),
+            ("Infra_Mask_K_ab000000", Some(r#""1nfra_Mask_""#)),
+            ("Infra_Mask_K_ab000000", Some("7")),
+        ] {
+            let err = VaultData::from_json(&with_entry(token, prefix)).err();
+            assert!(
+                matches!(err, Some(CoreError::VaultOpen)),
+                "{token} {prefix:?}"
+            );
         }
     }
 }

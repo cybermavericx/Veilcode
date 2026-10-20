@@ -54,6 +54,8 @@ pub struct Palette {
     pub chip: Color32,
     pub chip_hatch: Color32,
     pub chip_text: Color32,
+    /// Background of the finding's lines in the viewer (D137).
+    pub hit_line: Color32,
 }
 
 const fn rgb(hex: u32) -> Color32 {
@@ -92,6 +94,7 @@ pub const LIGHT: Palette = Palette {
     chip: rgb(0xE9E7FB),
     chip_hatch: rgb(0xCFCAF3),
     chip_text: rgb(0x2A2370),
+    hit_line: rgb(0xFFF3C4),
 };
 
 pub const DARK: Palette = Palette {
@@ -126,6 +129,7 @@ pub const DARK: Palette = Palette {
     chip: rgb(0x2B2856),
     chip_hatch: rgb(0x3D3973),
     chip_text: rgb(0xE0DDFF),
+    hit_line: rgb(0x3B3420),
 };
 
 /// The palette of the theme egui is drawing (`ui.visuals().dark_mode`).

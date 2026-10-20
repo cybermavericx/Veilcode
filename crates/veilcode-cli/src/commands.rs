@@ -140,6 +140,7 @@ fn mask(cli: &Cli, a: &MaskArgs) -> Result<()> {
     let opts = MaskOptions {
         include_unscanned: a.include_unscanned,
         ttl_days: a.ttl_days,
+        token_prefix: a.token_prefix.clone(),
     };
     let rep = veilcode_core::mask(&report, &Selection::All, &a.dir, &a.out, &mut vault, &opts)?;
     output::mask(&rep, a.ttl_days);

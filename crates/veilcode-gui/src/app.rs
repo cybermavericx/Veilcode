@@ -2,17 +2,19 @@
 //! timer, polls the worker and runs the in-process file picker.
 
 use crate::state::{
-    AppState, ExistsCache, Outcome, Screen, check_local, check_new_vault, existing_ancestor,
-    suggested_vault_path, wipe_string,
+    AppState, ExistsCache, GuiError, Outcome, Screen, check_local, check_new_vault,
+    existing_ancestor, suggested_vault_path, wipe_string,
 };
 use crate::theme;
 use crate::views::{self, chrome};
 use crate::worker::ThreadRunner;
 use eframe::egui;
-use egui_file_dialog::FileDialog;
+use egui_file_dialog::{DialogMode, FileDialog};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use veilcode_core::{MaskOptions, SystemClock, default_profile_path, default_vault_path};
+use veilcode_core::{
+    DEFAULT_PREFIX, MaskOptions, SystemClock, default_profile_path, default_vault_path,
+};
 
 /// Which form field a file-picker result goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,8 @@ pub struct Forms {
     pub everywhere: Option<String>,
     pub mask_out: String,
     pub ttl_days: u32,
+    /// The placeholder prefix as typed (D138).
+    pub token_prefix: String,
     pub separate: bool,
     pub separate_path: String,
     pub separate_pass: String,
@@ -76,6 +80,7 @@ impl Default for Forms {
             everywhere: None,
             mask_out: String::new(),
             ttl_days: MaskOptions::default().ttl_days,
+            token_prefix: DEFAULT_PREFIX.to_string(),
             separate: false,
             separate_path: String::new(),
             separate_pass: String::new(),
@@ -219,12 +224,50 @@ fn open_dialog(t: Target, create: bool) -> FileDialog {
             use_existing(d)
         }
     };
-    match t {
-        _ if t.picks_existing_dir() => d.pick_directory(),
-        Target::VaultFile if !create => d.pick_file(),
+    match picker_settings(t, create) {
+        // D135: the input folders list their files (they cannot be
+        // submitted: PickDirectory accepts only a directory). egui-file-dialog
+        // 0.15.0 offers this only through the deprecated `open`.
+        (DialogMode::PickDirectory, true) => {
+            #[allow(deprecated)]
+            d.open(DialogMode::PickDirectory, true);
+        }
+        (DialogMode::PickDirectory, false) => d.pick_directory(),
+        (DialogMode::PickFile, _) => d.pick_file(),
         _ => d.save_file(),
     }
     d
+}
+
+/// The dialog mode for `t` and whether it lists files (D126, D135).
+pub fn picker_settings(t: Target, create: bool) -> (DialogMode, bool) {
+    match t {
+        _ if t.picks_existing_dir() => (DialogMode::PickDirectory, true),
+        Target::VaultFile if !create => (DialogMode::PickFile, true),
+        _ => (DialogMode::SaveFile, true),
+    }
+}
+
+/// Puts a picked path into the field of `t`, after the checks the dialog
+/// cannot make (D126, D130, D135).
+pub fn accept_pick(state: &mut AppState, forms: &mut Forms, t: Target, path: &Path) {
+    if let Err(e) = check_local(path) {
+        state.report(Err(e));
+        return;
+    }
+    if t.picks_existing_dir() && !path.is_dir() {
+        state.report(Err(GuiError::NotAFolder));
+        return;
+    }
+    // D126: the dialog's path field can still name an existing file.
+    if t == Target::VaultFile && forms.create {
+        let r = check_new_vault(path);
+        if r.is_err() {
+            state.report(r);
+            return;
+        }
+    }
+    *forms.field(t) = path.display().to_string();
 }
 
 /// Opens in the nearest existing folder of `default`'s folder.
@@ -341,19 +384,7 @@ impl VeilApp {
             return;
         };
         self.target = None;
-        if let Err(e) = check_local(&path) {
-            self.state.report(Err(e));
-            return;
-        }
-        // D126: the dialog's path field can still name an existing file.
-        if t == Target::VaultFile && self.forms.create {
-            let r = check_new_vault(&path);
-            if r.is_err() {
-                self.state.report(r);
-                return;
-            }
-        }
-        *self.forms.field(t) = path.display().to_string();
+        accept_pick(&mut self.state, &mut self.forms, t, &path);
     }
 }
 
@@ -405,8 +436,80 @@ impl eframe::App for VeilApp {
             });
         });
         let ctx = ui.ctx().clone();
+        views::viewer::show(&ctx, &mut self.state);
         // Actions above may have locked (Lock now, a failed dispatch).
         sync_lock(&mut self.state, &mut self.forms, &ctx);
         self.file_picker(&ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::worker::InlineRunner;
+    use egui_file_dialog::DialogMode;
+
+    #[test]
+    fn g15_input_pickers_list_files_and_the_others_are_unchanged() {
+        let dir_with_files = (DialogMode::PickDirectory, true);
+        assert_eq!(picker_settings(Target::ScanInput, false), dir_with_files);
+        assert_eq!(picker_settings(Target::RestoreIn, true), dir_with_files);
+        let save = (DialogMode::SaveFile, true);
+        for t in [
+            Target::MaskOut,
+            Target::RestoreOut,
+            Target::SeparateVault,
+            Target::ProfileFile,
+        ] {
+            assert_eq!(picker_settings(t, false), save, "{t:?}");
+        }
+        let open_vault = (DialogMode::PickFile, true);
+        assert_eq!(picker_settings(Target::VaultFile, false), open_vault);
+        assert_eq!(picker_settings(Target::VaultFile, true), save);
+        let d = open_dialog(Target::ScanInput, false);
+        assert_eq!(d.mode(), DialogMode::PickDirectory);
+    }
+
+    /// egui-file-dialog 0.15.0 has no getter for `show_files`, so only the
+    /// mode of the real dialog is checked; the files flag is checked on
+    /// `picker_settings`, which `open_dialog` matches on.
+    #[test]
+    fn g15b_real_input_dialogs_are_folder_pickers() {
+        for t in [Target::ScanInput, Target::RestoreIn] {
+            assert_eq!(
+                open_dialog(t, false).mode(),
+                DialogMode::PickDirectory,
+                "{t:?}"
+            );
+            assert_eq!(picker_settings(t, false), (DialogMode::PickDirectory, true));
+        }
+        assert_eq!(
+            open_dialog(Target::MaskOut, false).mode(),
+            DialogMode::SaveFile
+        );
+        assert_eq!(
+            open_dialog(Target::VaultFile, false).mode(),
+            DialogMode::PickFile
+        );
+    }
+
+    #[test]
+    fn g15_a_picked_file_is_refused_for_input_folders() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let file = tmp.path().join("app.js");
+        std::fs::write(&file, b"x").expect("write");
+        let runner = Box::new(InlineRunner::<Outcome>::default());
+        let mut state = AppState::new(runner, Box::new(SystemClock));
+        let mut forms = Forms::default();
+        for t in [Target::ScanInput, Target::RestoreIn] {
+            accept_pick(&mut state, &mut forms, t, &file);
+            assert!(forms.field(t).is_empty(), "{t:?} took a file");
+            let msg = state.error().map(ToString::to_string);
+            assert_eq!(msg.as_deref(), Some("choose a folder, not a file"));
+            accept_pick(&mut state, &mut forms, t, tmp.path());
+            assert_eq!(*forms.field(t), tmp.path().display().to_string());
+        }
+        accept_pick(&mut state, &mut forms, Target::MaskOut, &file);
+        assert_eq!(forms.mask_out, file.display().to_string());
     }
 }

@@ -60,9 +60,12 @@ Goal: read your secrets from what you upload.
 What the provider still sees: all code and every secret **no detector
 recognised** (detection is best-effort, §6 below), the file layout, and the
 token names. A token name is built from the key name or rule id
-(`VEILCODE_<NAME>_<HEX8>`, §4), so it reveals *that* a value such as a database
-password exists, but not the value. The `HEX8` part is random and carries no
-information about the value.
+(`<PREFIX><NAME>_<HEX8>`, §4; the prefix is `VEILCODE_` unless the user chose
+another one, D138), so it reveals *that* a value such as a database password
+exists, but not the value. The `HEX8` part is random and carries no
+information about the value. A custom prefix hides that Veilcode was used only
+as far as the prefix itself does; the token shape (`_` + 8 lowercase hex) is
+the same.
 
 ### 4.2 A malicious repository or AI-modified input
 
@@ -231,7 +234,13 @@ reopen the vault to see its true state (D67, D72).
   Veilcode removes that state after a passphrase is submitted and on lock, but
   egui frees those strings without overwriting them first, so copies can
   remain in freed memory until it is reused (D106). Text Mode contents are
-  handled the same way.
+  handled the same way. The finding viewer (D137) holds the file text in
+  zeroizing buffers that are dropped on close and on lock. Until the user
+  clicks Reveal it holds no finding value at all, only offsets; Reveal reads
+  the file again and holds that one value until hide, close or lock. The text
+  egui lays out to draw it, including a revealed value, is a plain copy in
+  egui's text-layout cache that Veilcode cannot wipe. The viewer never opens
+  the file in another program.
 - **Old copies of the vault** kept by SSD wear-levelling, backups or sync
   (§5 above).
 - **A weak passphrase** on any vault copy an attacker obtains.
@@ -245,6 +254,27 @@ reopen the vault to see its true state (D67, D72).
   between the walk and the open can still make the open **block**. Avoiding
   this needs `O_NONBLOCK`, which needs a crate outside SPEC §9. Impact: a hang,
   not a leak.
+- **Finding viewer folder swap (D137, like D45).** The viewer checks every
+  folder below the scanned folder without following links, checks that the
+  file's real path is inside the scanned folder, and refuses a file whose
+  opened handle is not the one it checked (Unix: device and inode; Windows:
+  the file is opened as a reparse point and refused if it is one; Unix also
+  opens with `O_NOFOLLOW | O_NONBLOCK`). A parent folder swapped for a link
+  between those checks and the open is not detected on Windows, where std
+  reports no file identity. The viewer then still shows nothing unless the
+  file it reached has exactly the sha256 recorded by the scan, so it can only
+  ever show the content that was scanned. Nothing is written.
+- **Look-alike prefixes (D138, Info 5).** A prefix such as `XVEILCODE_` is
+  allowed. Its tokens contain a `VEILCODE_` shape, so a plain scan lists such
+  a token as a finding and a restore with a vault that lacks that prefix
+  reports the inner text as unknown. This affects reports only.
+- **Custom-prefix token shapes (D138, L3).** For a custom prefix, Veilcode
+  treats text as a token only if its 8 hex characters include a letter `a`–`f`
+  (every generated token does). A detected value that is exactly such a token
+  of the chosen prefix or of a prefix in the vault, such as
+  `Infra_Mask_DB_1234abcd`, is not masked by `mask`, and restore reports it as
+  unknown if the vault does not hold it; a plain `scan` still lists it.
+  The default `VEILCODE_` shape is unchanged.
 - **Output-dir race (D68).** Output folders are created fresh (`0700`) and
   unsafe Unix parents are refused, but writes are not done through directory
   file descriptors. Fully race-free writes would need a crate outside SPEC §9.

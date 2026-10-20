@@ -1,7 +1,7 @@
-# Veilcode — Specification (v1.3, frozen 2026-10-10)
+# Veilcode — Specification (v1.4, 2026-10-19)
 
 Repo: https://github.com/cybermavericx/Veilcode · License: MIT OR Apache-2.0
-Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md. v1.3 (maintainer-requested) adds the detection profile, custom keys, false-positive handling and review-before-mask (§5.1; D74–D80), and brings the §5 text in line with D41 and D48–D50.
+Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md. v1.3 (maintainer-requested) adds the detection profile, custom keys, false-positive handling and review-before-mask (§5.1; D74–D80), and brings the §5 text in line with D41 and D48–D50. v1.4 (maintainer-approved, from the rc3 Windows feedback) adds the custom placeholder prefix (§4, §6.1, §6.2, §7; D138) and the read-only finding viewer with Reveal (§10.4; D137).
 
 ## 1. Problem & positioning
 Developers paste server code into AI assistants, including `.env` files and config secrets. Veilcode masks those secrets with unique placeholders, stores the real values in a local encrypted vault, and restores them after the AI work is done, even if the AI moved, renamed, or edited the code.
@@ -33,13 +33,16 @@ scripts/check-offline.sh, scripts/check-test-ids.sh, scripts/net-audit.sh
 - **Supported platforms for v1:** Windows 10/11 x86_64 and Linux x86_64 (CLI: static musl binary, D91; GUI: glibc, X11 and Wayland). macOS is built and tested in CI but not released (§13).
 
 ## 4. Placeholder tokens
-- Format: `VEILCODE_<NAME>_<HEX8>`
+- Format: `<PREFIX><NAME>_<HEX8>`. The default `PREFIX` is `VEILCODE_`, so the default token is `VEILCODE_<NAME>_<HEX8>` (D138).
+  - `PREFIX` is chosen per mask (GUI "Placeholder prefix" field on the Mask screen, CLI `mask --token-prefix`). It is 2–16 ASCII characters: the first is a letter (`A`–`Z`, `a`–`z`), the rest are letters, digits or `_`, and the last is `_`. Any other prefix is refused before the mask starts (D138).
   - `NAME` is the key name, or the rule id if there is no key name. Uppercase it, map every character outside `[A-Z0-9]` to `_`, collapse runs of `_`, trim leading/trailing `_`, truncate to 24 characters. If the result is empty, use `SECRET`.
   - `HEX8` is 8 lowercase hex characters from 4 bytes of OS randomness (`getrandom`). It **must contain at least one letter `a`–`f`**; regenerate if not (D4).
-- Matching regex: `VEILCODE_[A-Z0-9_]{1,24}_[0-9a-f]{8}` (no `\b`). The **whole match** is the vault lookup key.
-  - NAME never contains lowercase letters and HEX8 always does, so the bytes after a token cannot change its match. The bytes before it can: text ending in `VEILCODE_[A-Z0-9_]*` directly before a token can make the leftmost match swallow it, which restore handles by trying every `VEILCODE_` offset (D29).
-- The same secret value always maps to the same token (dedupe within the vault). The NAME comes from the first occurrence.
+- Each vault entry stores the prefix its token was made with (§7). Restore never has to split a token to find its prefix: it uses the set of prefixes stored in the vault, plus `VEILCODE_` (D138).
+- Matching regex for a prefix `P`: `P[A-Z0-9_]{1,24}_[0-9a-f]{8}`, with `P` matched literally (no `\b`). For the default prefix this is `VEILCODE_[A-Z0-9_]{1,24}_[0-9a-f]{8}`. The **whole match** is the vault lookup key.
+  - NAME never contains lowercase letters and HEX8 always does, so the bytes after a token cannot change its match. The bytes before it can: text ending in `P[A-Z0-9_]*` directly before a token can make the leftmost match swallow it, which restore handles by trying every offset where a known prefix starts (D29, D138).
+- The same secret value **with the same prefix** always maps to the same token (dedupe within the vault). The NAME comes from the first occurrence. The same value masked with a different prefix gets its own token (D138).
 - If a generated token already exists in the vault, or already appears in any input file, regenerate it.
+- Text Mode (§6.3) always uses the default prefix.
 
 ## 5. Detection (scanner)
 **Input walk** (`walkdir`, never follow symlinks):
@@ -80,7 +83,7 @@ D2–D5 compile in byte mode with `unicode(false)` (D41).
 
 **Post-processing:**
 - A keyword pre-filter (case-insensitive) runs before each D1 regex.
-- Drop a candidate only if its span is **exactly** a §4 token match (D48a).
+- Drop a candidate only if its span is **exactly** a §4 token match of a known prefix (D48a). A plain scan has no vault, so it knows only `VEILCODE_`: tokens of a custom prefix are reported as findings there. Restore uses every prefix in the vault, and mask also never re-masks a token of the chosen prefix or of a vault prefix (D138).
 - **Overlap resolution (deterministic, D10 + D48b):**
   1. Sort candidates by (span length desc, detector D1<D2<D3<D4<D5, rule index in gitleaks.toml asc, start asc).
   2. Merge overlapping candidates into their union span, credited to the first candidate in that order.
@@ -127,19 +130,19 @@ Inputs: input dir, output dir, ScanReport plus a selection of finding ids (defau
 1. Refuse if the output dir already exists or is inside the input dir; Veilcode creates it itself, 0700 on Unix (D68). Compare canonicalised paths, and refuse an unsafe group/other-writable non-sticky parent on Unix. Compare canonicalised paths; for a not-yet-existing output dir, canonicalise its nearest existing ancestor.
 2. **Validate every `rel_path`** that comes from the ScanReport or findings file. It must be relative and `/`-separated, with no `..`, `.` or empty components, and no root, drive or UNC prefix. Reject before any I/O.
 3. Verify that **every** text file to be written matches `scanned_files` (sha256), and that no text file exists that is absent from `scanned_files`. On mismatch, fail with "file changed since scan — rescan".
-4. Get or create a token for each selected secret. Store `token → {value_hex, name, rule_id}` in the vault and record a session.
+4. Get or create a token for each selected secret, with the chosen prefix (§4). Store `token → {value_hex, name, rule_id, prefix}` in the vault and record a session.
 5. Write the output tree:
    - Text files: replace spans right-to-left. All other bytes stay identical, including CRLF and encoding.
    - Binary and oversized files are **not copied** unless `include_unscanned=true`.
    - **Symlinks are never copied.**
    - Excluded paths are never copied.
-6. Save the vault, then return a MaskReport: session id, counts, files not copied. The report contains no secret values.
+6. Save the vault, then return a MaskReport: session id, counts (including `already_tokens`, selected findings that already were tokens, D138), files not copied. The report contains no secret values.
 
 ### 6.2 Restore (`AI-modified masked folder → new folder`)
 Inputs: input dir, output dir, vault, optional session id (default: newest session), `keep` (default false).
 1. Same output-dir rules as mask. The walk uses the chosen session's recorded `scan_options` (D57r). `.git` is excluded and symlinks are not copied.
 2. Scan the input with detectors D1–D4. Any finding is a **new secret introduced by the AI**; report it.
-3. In text files, replace every token match found **anywhere in the vault** with its value. A match is tried at every `VEILCODE_` offset (D29). Token-shaped strings not in the vault are left untouched and reported as **unknown**.
+3. In text files, replace every token match found **anywhere in the vault** with its value. A match is tried at every offset where a known prefix starts (the prefixes stored in the vault, plus `VEILCODE_`; D29, D138). Strings shaped like a token of a known prefix but not in the vault are left untouched and reported as **unknown**. A finding whose span is exactly such a token is not reported as a new secret.
 4. Tokens of the chosen session that never appear in the input are reported as **missing** (the AI may have deleted them).
 5. Copy every other non-symlink file as-is. Fsync every written file, the created directories and the output root (on Unix).
 6. **Forget by default (D60).** If the restore is clean (0 missing, 0 unknown, 0 new secrets) and `keep` is false, delete the chosen session and every entry no other session uses, then save under the D28 lock (or remove the vault file, §7 D62). This step runs only after step 5 has succeeded; any earlier error leaves the vault untouched.
@@ -174,7 +177,7 @@ Every write path must be checked: the joined output path must stay under the out
   - Parameters are read from the header when opening, and must be within `m ∈ [8, 262144]`, `t ∈ [1, 10]`, `p ∈ [1, 4]` **before** the KDF runs. Otherwise open fails with the generic error.
   - The salt is kept for the vault's lifetime.
 - **AEAD:** XChaCha20-Poly1305, with a fresh random nonce on every save. AAD = all header bytes before the ciphertext.
-- **Plaintext:** JSON `{ "version":1, "sessions":[...], "entries":{ token: {value_hex,name,rule_id} } }`. `value_hex` is the lowercase hex of the raw secret bytes.
+- **Plaintext:** JSON `{ "version":1, "sessions":[...], "entries":{ token: {value_hex,name,rule_id[,prefix]} } }`. `value_hex` is the lowercase hex of the raw secret bytes. `prefix` is written only when it is not `VEILCODE_`, and an absent `prefix` reads as `VEILCODE_`, so a vault holding only default-prefix entries has the same JSON shape as before v1.4. On open, a stored prefix that breaks the §4 rule, or an entry key that is not a token of its own prefix, gives the generic error (D138).
 - **Session record** in the plaintext: `{ id, created, expires_at, source_label, scan_options, tokens }`. `expires_at` is validated on deserialize (`created < expires_at <= created + 365 days`), otherwise the generic error.
 - **Open (D61):** after a successful decrypt, sessions with `expires_at <= now` (from the core `Clock`) are purged, along with entries no remaining session uses. If any were purged, the vault is saved immediately, or removed (D62). The open result exposes `expired_removed` (a count only).
 - **Save:** write `vault.vc.tmp`, fsync, rename over `vault.vc` (D28 lock, `0600` on Unix).
@@ -220,7 +223,7 @@ Every write path must be checked: the joined output path must stay under the out
    - Run the GUI under `xvfb-run` for 10 s, also under strace.
    - Fail on any `socket()` or `connect()` with a family other than `AF_UNIX` (stricter than an AF_INET/AF_INET6/AF_PACKET/AF_NETLINK deny list), on `io_uring_setup`, and on any `execve` after the first. On Linux, `AF_UNIX` here means the display server (X11 or Wayland); the GUI links no D-Bus client crate on Linux (D104).
    - If a forbidden family appears, stop and report; do not allow-list it quietly.
-4. **GUI hardening:** no webview, no HTML, no hyperlinks, no URL opening, in-process file picker only, persistence disabled. Secret values appear only in the Text Mode widgets; all other views hold previews.
+4. **GUI hardening:** no webview, no HTML, no hyperlinks, no URL opening, in-process file picker only, persistence disabled. Secret values appear only in the Text Mode widgets and, after the user clicks Reveal, in the finding viewer for that one finding (D137): until Reveal the viewer holds offsets and lengths only, and the value is wiped on hide, close, opening another finding and lock. All other views hold previews.
 5. Windows has no strace equivalent in CI. Manual verification is documented in VERIFY_OFFLINE.md (firewall outbound block plus Resource Monitor / Wireshark).
 
 ## 11. Threat model (summary; full text in THREAT_MODEL.md)

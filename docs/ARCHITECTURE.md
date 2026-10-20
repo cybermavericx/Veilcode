@@ -67,21 +67,23 @@ crates/veilcode-core/src/
 ├── hex.rs            # hand-written lower-hex encode/decode (no dependency)  — for value_hex
 ├── rng.rs            # trait RandomSource { fn fill(&mut self, buf: &mut [u8]) -> Result<…> }
 │                     #   OsRandom (getrandom) in prod; SeqRandom (scripted bytes) in tests (T5, T7)
-├── token.rs          # TOKEN_REGEX (SPEC §4), sanitize_name(), TokenGen<R: RandomSource>
-│                     #   ::generate(name, &existing_vault_tokens, &input_haystacks) → Token
+├── token.rs          # TOKEN_PATTERN (default prefix, SPEC §4), TokenPrefix (D138 rule), sanitize_name(),
+│                     #   TokenGen<R: RandomSource>::generate(name, &prefix, &existing_vault_tokens, &input_haystacks) → Token
+│                     #   Token = <PREFIX><NAME>_<HEX8>; the vault entry stores its prefix (D138)
 ├── paths.rs          # RelPath (validated: relative, '/'-separated, no ./../empty/root/drive/UNC)
 │                     # OutputDir::prepare(out, input) → checks empty + not inside input (canonicalised)
 │                     # safe_join(&OutputDir, &RelPath) → PathBuf  (the ONLY way to build a write path)
 ├── vault/
 │   ├── mod.rs        # Vault { header, key: Key, data: VaultData, file_hash }  (no Debug of data)
 │   │                 #   create(path, &SecretString) / open(path, &SecretString) / save()
-│   │                 #   get_or_create_token(&SecretBytes, name, rule_id) → Token
+│   │                 #   get_or_create_token_with(&SecretBytes, name, rule_id, &TokenPrefix, haystacks) → Token (dedupe per value+prefix); get_or_create_token = default prefix
 │   │                 #   pub(crate) fn value(&Token) → Option<&SecretBytes>   (restore/text only)
 │   │                 #   sessions(): list / add / delete (SPEC §6.4); open() purges expired sessions (D61)
 │   ├── format.rs     # Header parse/serialise (magic, format, params, salt, nonce); bounds check
 │   ├── crypto.rs     # derive_key(params, pass, salt) → Key (Zeroize); seal / open (AAD = header)
 │   │                 #   #[cfg(test)] KDF call counter (V9), zeroize counter hook (G3)
-│   └── model.rs      # VaultData { version, sessions, entries: BTreeMap<Token, Entry{value_hex,name,rule_id}> }
+│   └── model.rs      # VaultData { version, sessions, entries: BTreeMap<Token, Entry{value_hex,name,rule_id,prefix}> }
+│                     #   prefix written only when not VEILCODE_; absent reads as VEILCODE_ (D138)
 │                     #   Session { id, created, expires_at (validated, D61), source_label, scan_options (D57r), tokens }
 ├── scan/
 │   ├── mod.rs        # pub fn scan(input, &ScanOptions, &Profile) → Result<ScanReport>
@@ -103,6 +105,8 @@ crates/veilcode-core/src/
 ├── vault/session.rs  # retention (child of vault, so it can reach private fields): forget(session), purge_expired(now), delete, status, purge; empty vault → file removed (D60–D63)
 ├── clock.rs          # trait Clock { now_unix() }; SystemClock; ManualClock is #[cfg(test)] and open_with_clock is pub(crate) (D70). Used by expiry (D61) and GUI auto-lock
 ├── text.rs           # mask_text / restore_text (GUI Text Mode)
+├── view.rs           # view_finding(root, &ScanReport, id) → FindingView (D137): read-only, path-checked like the
+│                     #   scanner, 2 MiB cap, sha256 must match the scan; text in Zeroizing buffers, redacting Debug
 ├── report.rs         # MaskReport, RestoreReport (Serialize; previews/ids/counts only)
 └── test_support.rs   # #[cfg(test)] helpers from TEST_CASES.md (random_alnum, fake_github_pat, assert_no_secret…)
 ```
@@ -131,7 +135,7 @@ crates/veilcode-core/src/
 1. `OutputDir::prepare`
 2. Walk the input
 3. Scan → `new_secrets` (previews)
-4. For each text file: `TOKEN_REGEX` matches → vault lookup → replace or record as unknown
+4. For each text file: every offset where a vault prefix starts (D29, D138) → vault lookup → replace; other token shapes → unknown
 5. Compute missing (session tokens never seen)
 6. Fsync the outputs; if clean and not keep, forget the session (D60), or remove the vault file if it was the last session (D62)
 6. Copy the other non-symlink files
@@ -149,6 +153,9 @@ pub fn mask_text(text: &str, vault: &mut Vault) -> Result<(String, SessionId), C
 pub fn restore_text(text: &str, vault: &mut Vault, session: Option<&SessionId>, keep: bool) -> Result<(String, RestoreReport), CoreError>;
 pub struct Vault; // create / open (→ expired_removed) / save / sessions / delete_session / status / purge
 pub fn default_vault_path() -> Option<PathBuf>; // directories::ProjectDirs
+pub struct TokenPrefix; // parse(&str) (D138 rule) / as_str; MaskOptions.token_prefix (default VEILCODE_)
+pub fn view_finding(root: &Path, report: &ScanReport, id: &str) -> Result<FindingView, CoreError>; // D137, offsets only
+pub fn reveal_finding(root: &Path, report: &ScanReport, id: &str) -> Result<FindingView, CoreError>; // after Reveal
 ```
 The exact signatures are settled in P1–P3 tests. Changing this surface after P3 needs a DECISIONS entry.
 
@@ -174,7 +181,8 @@ crates/veilcode-gui/src/
 ├── worker.rs      # one background thread + std::sync::mpsc: Argon2 and file I/O never block the UI
 ├── theme.rs       # palette (light + dark), spacing, radii → egui Visuals/Style (D132); WCAG contrast test G13 (D133)
 ├── app.rs         # impl eframe::App: route to views, feed input events to idle timer, poll worker
-└── views/         # unlock.rs, help.rs (always enabled, D127), scan.rs, review.rs (mandatory before mask, D80), mask.rs, restore.rs, sessions.rs, text_mode.rs
+└── views/         # viewer.rs: the read-only finding window (D137; never launches a program)
+                   # unlock.rs, help.rs (always enabled, D127), scan.rs, review.rs (mandatory before mask, D80), mask.rs, restore.rs, sessions.rs, text_mode.rs
                    # chrome.rs: header + veil emblem, step rail, result cards, veil chips (D131, D132), painter only
                    # pickers via egui-file-dialog; no hyperlinks; Text Mode warning on restored text
 crates/veilcode-gui/tests/features.rs   # g4_: cargo metadata feature audit

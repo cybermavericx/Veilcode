@@ -318,7 +318,11 @@ pub(crate) fn classify(path: &Path, expected: Option<(u64, u64)>) -> Result<Clas
 /// Reads up to `limit` bytes. The content may hold secrets, so the buffer
 /// never reallocates in place: it grows into a new wiped buffer and the old
 /// one is zeroized on drop (L1). `hint` is the expected size.
-fn read_wiped(file: &mut File, hint: usize, limit: usize) -> io::Result<Zeroizing<Vec<u8>>> {
+pub(crate) fn read_wiped(
+    file: &mut File,
+    hint: usize,
+    limit: usize,
+) -> io::Result<Zeroizing<Vec<u8>>> {
     let mut buf = Zeroizing::new(Vec::with_capacity(hint.saturating_add(1).min(limit)));
     loop {
         if buf.len() >= limit {

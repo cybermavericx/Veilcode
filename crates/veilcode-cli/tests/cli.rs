@@ -426,3 +426,84 @@ fn pf7_cli_profile_commands() {
     );
     assert_eq!(both.code, 2);
 }
+
+#[test]
+fn c10_mask_token_prefix_round_trip() {
+    let mut ctx = Ctx::new();
+    let sm = sample(&mut ctx);
+    let (masked, restored) = (ctx.path("masked"), ctx.path("restored"));
+    let m = ctx.run_pass(&[
+        "mask",
+        &s(&sm.input),
+        "--out",
+        &s(&masked),
+        "--token-prefix",
+        "Infra_Mask_",
+    ]);
+    assert_eq!(m.code, 0, "{}", m.err());
+    let out = all_bytes(&masked);
+    assert!(
+        contains(&out, "Infra_Mask_DB_PASSWORD_"),
+        "custom token missing"
+    );
+    assert!(!contains(&out, "VEILCODE_"), "default token written");
+    let r = ctx.run_pass(&["restore", &s(&masked), "--out", &s(&restored)]);
+    assert_eq!(r.code, 0, "{}", r.err());
+    assert!(r.err().contains("session forgotten"), "{}", r.err());
+    assert_eq!(tree(&restored), tree(&sm.input));
+    for o in [&m, &r] {
+        assert_no_secret(&o.stdout, &ctx.secrets);
+        assert_no_secret(&o.stderr, &ctx.secrets);
+    }
+}
+
+#[test]
+fn c10_invalid_token_prefix_is_refused_before_the_passphrase() {
+    let mut ctx = Ctx::new();
+    let sm = sample(&mut ctx);
+    let masked = ctx.path("masked");
+    let seventeen = format!("A{}_", "b".repeat(15));
+    for bad in ["1bad_", "NoUnderscore", seventeen.as_str()] {
+        let args = [
+            "mask",
+            &s(&sm.input),
+            "--out",
+            &s(&masked),
+            "--token-prefix",
+            bad,
+        ];
+        let o = ctx.run(&args, "");
+        assert_eq!(o.code, 2, "{bad}: {}", o.err());
+        assert!(o.err().contains("ending with _"), "{bad}: {}", o.err());
+        assert!(!ctx.vault.exists() && !masked.exists(), "{bad}");
+        assert_no_secret(&o.stderr, &ctx.secrets);
+    }
+    let help = ctx.run(&["mask", "--help"], "");
+    assert_eq!(help.code, 0);
+    assert!(help.out().contains("--token-prefix"), "{}", help.out());
+}
+
+#[test]
+fn c10_mask_reports_findings_that_already_are_tokens() {
+    let mut ctx = Ctx::new();
+    let input = ctx.path("project");
+    let pw = fake_password();
+    let env = format!("API_KEY=Infra_Mask_API_KEY_abcdef01\nDB_PASSWORD={pw}\n");
+    write_tree(&input, &[(".env", env.as_bytes())]);
+    ctx.secrets.push(pw);
+    let masked = ctx.path("masked");
+    let m = ctx.run_pass(&[
+        "mask",
+        &s(&input),
+        "--out",
+        &s(&masked),
+        "--token-prefix",
+        "Infra_Mask_",
+    ]);
+    assert_eq!(m.code, 0, "{}", m.err());
+    assert!(m.err().contains("masked 1 secrets"), "{}", m.err());
+    let line = "1 findings already were placeholder tokens (not masked again)";
+    assert!(m.err().contains(line), "{}", m.err());
+    let out = all_bytes(&masked);
+    assert!(contains(&out, "API_KEY=Infra_Mask_API_KEY_abcdef01\n"));
+}

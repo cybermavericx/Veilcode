@@ -10,6 +10,7 @@ mod scan;
 mod sessions;
 mod text_mode;
 mod unlock;
+pub mod viewer;
 
 use crate::app::{Forms, Target};
 use crate::state::{AppState, Screen};

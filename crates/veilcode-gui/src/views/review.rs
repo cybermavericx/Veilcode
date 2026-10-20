@@ -60,25 +60,46 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
     everywhere_modal(ui, state, forms);
 }
 
+/// One finding: checkbox, preview, View; double-clicking the row outside
+/// its widgets opens the viewer too (D137).
 fn finding_row(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms, row: &FindingRow) {
-    ui.horizontal(|ui| {
-        let mut ticked = row.ticked;
-        if ui.checkbox(&mut ticked, finding_text(row)).changed() {
-            let r = state.set_ticked(&row.id, ticked);
-            state.report(r);
-        }
-        chrome::veil_chip(ui, &row.preview);
-        if row.ticked {
-            return;
-        }
-        if ui.button("Remember: this file").clicked() {
-            let r = state.remember(&row.id, Scope::ThisFile, false);
-            state.report(r);
-        }
-        if ui.button("Remember: everywhere").clicked() {
-            forms.everywhere = Some(row.id.clone());
-        }
-    });
+    let builder = egui::UiBuilder::new()
+        .layout(egui::Layout::left_to_right(egui::Align::Center))
+        .sense(egui::Sense::click());
+    let r = ui.scope_builder(builder, |ui| finding_widgets(ui, state, forms, row));
+    if r.response.double_clicked() {
+        let r = state.view_finding(&row.id);
+        state.report(r);
+    }
+}
+
+fn finding_widgets(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms, row: &FindingRow) {
+    let mut ticked = row.ticked;
+    if ui.checkbox(&mut ticked, finding_text(row)).changed() {
+        let r = state.set_ticked(&row.id, ticked);
+        state.report(r);
+    }
+    chrome::veil_chip(ui, &row.preview);
+    let view = egui::Button::new("View");
+    let hint = "Show the file around this finding (read-only)";
+    if ui
+        .add_enabled(!state.is_busy(), view)
+        .on_hover_text(hint)
+        .clicked()
+    {
+        let r = state.view_finding(&row.id);
+        state.report(r);
+    }
+    if row.ticked {
+        return;
+    }
+    if ui.button("Remember: this file").clicked() {
+        let r = state.remember(&row.id, Scope::ThisFile, false);
+        state.report(r);
+    }
+    if ui.button("Remember: everywhere").clicked() {
+        forms.everywhere = Some(row.id.clone());
+    }
 }
 
 fn add_key(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {

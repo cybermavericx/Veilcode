@@ -97,6 +97,11 @@ fn pairs(v: &Visuals, p: &Palette) -> Vec<Pair> {
         ("rail locked label", p.weak, panel),
         ("veil-chip text on chip", p.chip_text, p.chip),
         ("veil-chip text on hatch", p.chip_text, p.chip_hatch),
+        ("viewer text on window", p.text, v.window_fill),
+        ("viewer line number on window", p.weak, v.window_fill),
+        ("viewer hit-line text", p.text, p.hit_line),
+        ("viewer hit-line number", p.weak, p.hit_line),
+        ("viewer value or mask", p.chip_text, p.chip),
     ]
 }
 
