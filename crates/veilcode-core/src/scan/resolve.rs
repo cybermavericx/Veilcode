@@ -1,16 +1,10 @@
 //! Post-processing (SPEC §5, D10, D48): drop empty spans and spans that are
-//! exactly a token, then merge overlapping candidates into their union span,
+//! exactly a token of a known prefix (D138), then merge overlapping candidates into their union span,
 //! credited to the D10 winner. O(k log k) (D42).
 
 use crate::scan::detect::Candidate;
-use crate::token::TOKEN_PATTERN;
-use regex::bytes::Regex;
+use crate::token::KnownPrefixes;
 use std::cmp::Ordering;
-use std::sync::LazyLock;
-
-/// The token regex anchored at both ends (D48a: only an exact token is dropped).
-static EXACT_TOKEN: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(&format!("^(?:{TOKEN_PATTERN})$")).ok());
 
 /// D10 order: length desc, detector D1<D2<D3<D4, rule index asc, start asc.
 fn d10_order(a: &Candidate, b: &Candidate) -> Ordering {
@@ -22,10 +16,15 @@ fn d10_order(a: &Candidate, b: &Candidate) -> Ordering {
 }
 
 /// The accepted candidates of one file, sorted by start, never overlapping.
-pub(crate) fn resolve(content: &[u8], cands: Vec<Candidate>) -> Vec<Candidate> {
+/// D48a: only a span that is exactly a `known` token is dropped.
+pub(crate) fn resolve(
+    content: &[u8],
+    cands: Vec<Candidate>,
+    known: &KnownPrefixes,
+) -> Vec<Candidate> {
     let mut cands: Vec<Candidate> = cands
         .into_iter()
-        .filter(|c| c.start < c.end && !is_token(&content[c.start..c.end]))
+        .filter(|c| c.start < c.end && !known.is_exact(&content[c.start..c.end]))
         .collect();
     cands.sort_by_key(|c| c.start);
     // Sweep by start: a candidate starting before the current group's end
@@ -93,9 +92,4 @@ impl Group {
         }
         win
     }
-}
-
-/// True if the span is exactly a placeholder token (SPEC §4, D48a).
-fn is_token(span: &[u8]) -> bool {
-    EXACT_TOKEN.as_ref().is_some_and(|re| re.is_match(span))
 }

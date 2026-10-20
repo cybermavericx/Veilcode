@@ -186,7 +186,8 @@ fn s7_overlap_resolution() {
         cand(60, 64, Detector::D1, 7), // touches nothing: kept as is
         cand(64, 66, Detector::D1, 8), // adjacent (not overlapping): kept
     ];
-    let got: Vec<_> = resolve(&content, input)
+    let known = crate::token::KnownPrefixes::default();
+    let got: Vec<_> = resolve(&content, input, &known)
         .into_iter()
         .map(|c| (c.start, c.end, c.detector, c.rule_idx))
         .collect();
@@ -205,7 +206,7 @@ fn s7_overlap_resolution() {
 #[test]
 fn s8_existing_tokens_ignored() {
     let token = TokenGen::new(OsRandom)
-        .generate("API_KEY", |_| false, &[])
+        .generate("API_KEY", &Default::default(), |_| false, &[])
         .expect("token");
     let dir = tempfile::tempdir().expect("tempdir");
     let body = format!("API_KEY={}\n", token.as_str());
@@ -479,7 +480,7 @@ fn s3c_raw_at_in_url_password() {
 #[test]
 fn s8b_token_plus_bytes_is_kept() {
     let token = TokenGen::new(OsRandom)
-        .generate("X", |_| false, &[])
+        .generate("X", &Default::default(), |_| false, &[])
         .expect("token");
     let rest = fake_password();
     let value = format!("{}{rest}", token.as_str());

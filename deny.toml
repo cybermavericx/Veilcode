@@ -17,6 +17,19 @@ all-features = true
 # Fail on yanked crates; flag unmaintained crates anywhere in the graph.
 yanked = "deny"
 unmaintained = "all"
+# D140 (maintainer's choice, 2026-10-19): three "unmaintained" notices for
+# crates that no shipped binary compiles. `cargo tree -e normal,build
+# --target <t> -i <crate>` prints nothing for x86_64-unknown-linux-gnu,
+# x86_64-unknown-linux-musl, x86_64-pc-windows-msvc, x86_64-apple-darwin and
+# aarch64-apple-darwin; they enter cargo-deny's merged all-features graph via
+# eframe -> egui-winit -> accesskit_winit -> accesskit_unix. Review by
+# 2027-01-19 (the date is in each reason; no `expiry` key is used because its
+# support in cargo-deny 0.20.2 was not checked).
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained notice (merged into zbus 6); not compiled into any shipped binary (cargo tree on linux-gnu, linux-musl, windows-msvc, darwin); enters via eframe->egui-winit->accesskit_winit->accesskit_unix. Review by 2027-01-19 (D140)." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained notice (merged into zbus 6); not compiled into any shipped binary (cargo tree on linux-gnu, linux-musl, windows-msvc, darwin); enters via eframe->egui-winit->accesskit_winit->accesskit_unix. Review by 2027-01-19 (D140)." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained notice (merged into zbus 6); not compiled into any shipped binary (cargo tree on linux-gnu, linux-musl, windows-msvc, darwin); enters via eframe->egui-winit->accesskit_winit->accesskit_unix. Review by 2027-01-19 (D140)." },
+]
 
 [licenses]
 # Built from `cargo deny check licenses` output. Our own crates are

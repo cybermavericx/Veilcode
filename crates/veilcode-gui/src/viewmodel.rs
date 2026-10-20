@@ -87,6 +87,8 @@ pub struct MaskView {
     pub secrets_masked: usize,
     pub tokens: usize,
     pub ignored_by_profile: usize,
+    /// Findings skipped because they already were tokens (D138).
+    pub already_tokens: usize,
     pub not_copied: usize,
     /// The output folder.
     pub out: String,
@@ -102,6 +104,7 @@ pub fn mask_view(r: &MaskReport, out: String, vault: Option<String>) -> MaskView
         secrets_masked: r.secrets_masked,
         tokens: r.tokens,
         ignored_by_profile: r.ignored_by_profile,
+        already_tokens: r.already_tokens,
         not_copied: r.not_copied.len(),
         out,
         vault,
@@ -413,6 +416,10 @@ pub fn mask_card(m: &MaskView) -> ResultCard {
         format!("Session {}", m.session_id),
         format!("Tokens: {}", m.tokens),
         format!("Ignored by profile (not masked): {}", m.ignored_by_profile),
+        format!(
+            "Already placeholder tokens (not masked again): {}",
+            m.already_tokens
+        ),
         format!("Files not copied (binary or oversized): {}", m.not_copied),
     ];
     if let Some(v) = &m.vault {

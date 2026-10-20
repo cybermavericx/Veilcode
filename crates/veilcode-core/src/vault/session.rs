@@ -85,7 +85,8 @@ impl Vault {
         Ok(sessions)
     }
 
-    /// D63: removes every session and entry, then the file (D62).
+    /// D63: removes every session and entry, then the file (D62); the
+    /// remembered prefixes go with it (D141).
     pub fn purge(&mut self) -> Result<PurgeResult> {
         let (sessions_removed, entries_removed) = self.commit(|d| {
             let counts = (d.sessions.len(), d.entries.len());
@@ -116,7 +117,9 @@ impl Vault {
         let mut next = self.data.clone();
         let out = change(&mut next);
         if next.sessions.is_empty() {
+            // D62 removes the file, so nothing else may stay in memory (D141).
             next.entries.clear();
+            next.project_prefixes.clear();
         }
         let old = std::mem::replace(&mut self.data, next);
         let persisted = if self.data.sessions.is_empty() {

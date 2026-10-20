@@ -6,6 +6,7 @@ use crate::mask::{Haystack, apply, plan_spans};
 use crate::report::RestoreReport;
 use crate::restore::{finish, replace_tokens, require_session};
 use crate::scan::{self, RuleSet, ScanOptions};
+use crate::token::TokenPrefix;
 use crate::vault::{DEFAULT_TTL_DAYS, SessionId, Vault};
 
 /// The session label for Text Mode (D53).
@@ -16,14 +17,17 @@ const TEXT_LABEL: &str = "text";
 pub fn mask_text(text: &str, vault: &mut Vault) -> Result<(String, SessionId)> {
     let rules = RuleSet::load()?;
     let content = text.as_bytes();
-    let findings = scan::scan_pasted(&rules, content);
+    // G4: tokens of any prefix in the vault are not masked again.
+    let findings = scan::scan_pasted(&rules, content, &vault.known_prefixes());
     let selected: Vec<_> = findings.iter().collect();
     let hay = Haystack {
         content,
         all: &[content],
     };
     let mut tokens = Vec::new();
-    let plan = plan_spans(vault, &hay, &selected, &mut tokens)?;
+    // SPEC §4: Text Mode always uses the default prefix.
+    let prefix = TokenPrefix::default();
+    let plan = plan_spans(vault, &hay, &selected, &prefix, &mut tokens)?;
     let masked = apply(content, &plan);
     let masked = String::from_utf8(masked.to_vec()).map_err(|_| CoreError::TextNotUtf8)?;
     let id = vault.add_session(TEXT_LABEL, tokens, DEFAULT_TTL_DAYS, ScanOptions::default())?;
@@ -44,8 +48,9 @@ pub fn restore_text(
     let session = require_session(vault, session, Some(TEXT_LABEL))?;
     let rules = RuleSet::load()?;
     let content = text.as_bytes();
-    let new_secrets = scan::scan_pasted(&rules, content);
-    let mut restored = replace_tokens(content, vault);
+    let known = vault.known_prefixes();
+    let new_secrets = scan::scan_pasted(&rules, content, &known);
+    let mut restored = replace_tokens(content, vault, &known);
     if std::str::from_utf8(&restored.bytes).is_err() {
         return Err(CoreError::TextNotUtf8);
     }

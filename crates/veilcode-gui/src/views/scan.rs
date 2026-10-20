@@ -26,6 +26,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         let r = state.scan(input);
         state.report(r);
     }
+    rescan_row(ui, state);
     let Some(card) = state.scan_card() else {
         return;
     };
@@ -43,6 +44,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
     for row in rows {
         ui.horizontal(|ui| finding(ui, state, &row));
     }
+}
+
+/// D136: scan the same folder again; the review starts over.
+fn rescan_row(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(state.can_rescan(), egui::Button::new("Rescan"))
+            .clicked()
+        {
+            let r = state.rescan();
+            state.report(r);
+        }
+        ui.weak(
+            "Scans the last folder again: every finding is ticked again and the review restarts.",
+        );
+    });
 }
 
 /// The per-project profile option (D74), next to the per-project vault.

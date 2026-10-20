@@ -127,6 +127,22 @@ A 0-byte file, the 8-byte magic alone, the header alone, and header + 15 bytes e
 ### V13 — save lock and file mode
 Type: auto
 If `vault.vc.tmp` already exists, save fails with the D28 error and leaves both files untouched. On Unix (`#[cfg(unix)]`) the saved `vault.vc` has mode `0600`.
+### T9 — placeholder prefix rule (D138, added in P8)
+Type: auto
+`TokenPrefix::parse` accepts a prefix exactly when the D138 rule holds (2–16 ASCII characters, a letter first, then letters, digits or `_`, ending with `_`). Accepted: `VEILCODE_`, `Infra_Mask_`, `ab_`, a 16-character prefix. Refused: empty, `A`, `_A_`, `1A_`, `AB`, `A-B_`, `Ä_`, `A B_`, a 17-character prefix. The error states the rule and contains none of the input. A token generated with a custom prefix is `PREFIX + NAME + _ + HEX8`, is a whole match of that prefix's token regex, and T5 (HEX8 letter) and T7 (input collision) hold for it. Fix round: a prefix that starts with `VEILCODE_` but is not exactly `VEILCODE_` (`VEILCODE_X_`, `VEILCODE__`) is refused with the reserved-prefix error (sec L4), `VEILCODEX_` is accepted; for a custom prefix a shape whose HEX8 has no `a`–`f` is not a token (exact-token check, `Token` parsing), while `VEILCODE_K_12345678` still is (sec L3).
+### T10 — prefix stored per vault entry (D138, added in P8)
+Type: auto
+- A vault with entries of two prefixes saves and opens with each entry's prefix and value intact.
+- The JSON of a default-prefix entry has no `prefix` field (the pre-v1.4 shape), and an entry without `prefix` reads as `VEILCODE_`.
+- Open fails with the generic error when a stored prefix breaks the rule, or when an entry key is not a whole token of its own prefix.
+- `get_or_create_token` dedupes per (value, prefix): the same value with the same prefix returns the same token; with another prefix it returns a new token with that prefix.
+
+### T11 — project prefix memory in the vault (D141, added in P8)
+Type: auto
+- `ProjectKey::for_input` gives the same key for two spellings of one folder (`dir`, `dir/sub/..`) and another key for another folder; the key is 64 lowercase hex characters, its Debug holds no part of the path, and a missing folder is an `Io` error.
+- A vault that remembers `Infra_Mask_` for a key saves and opens with it; the plaintext JSON has `"project_prefixes":{"<key>":"Infra_Mask_"}` and not the folder name. Remembering `VEILCODE_` removes the key, and the JSON then has no `project_prefixes` member (the pre-D141 shape).
+- Open fails with the generic error when a key is not 64 lowercase hex characters (uppercase, 62 characters, a folder name) or a prefix breaks the D138 rule (`Infra_Mask`, `VEILCODE_X_`, a number); the pre-D141 shape opens with no remembered prefix.
+- Deleting the last session (D62, the file is removed) and purge both clear the memory, so memory equals disk.
 
 ---
 
@@ -205,6 +221,11 @@ Type: auto
 ### S8b — span containing a token plus other bytes is kept (D48a)
 Type: auto
 `TOKEN=VEILCODE_X_abcdef12<rest>`: one finding whose span covers the whole value. A value that is exactly a token gives no finding (as S8).
+### S8c — mask never masks an existing token again (D138 fix round, QA G4)
+Type: auto
+- A `.env` holding a token made earlier with the vault's custom prefix, plus a new password: a plain scan reports both, and mask (default prefix) masks only the password and leaves the token byte for byte.
+- A `.env` holding a token of the chosen custom prefix (not yet in the vault) plus a password, masked with that prefix: only the password is masked.
+- In both cases `MaskReport.already_tokens` is 1 (security re-review Low 1).
 ### S16b — invalid UTF-8 inside the secret (D41)
 Type: auto
 A `.env` value, a PHP define value and a URL password, each containing byte `0xE9`, are each detected, and each span includes that byte.
@@ -265,6 +286,9 @@ Each `rel_path` in `../x`, `a/../../x`, `/etc/x`, `C:\x`, `\\srv\x` and `a//b` i
 ### M11 — output dir must be new and private (D68)
 Type: auto
 An existing empty output dir is refused for both mask and restore, and nothing is written. A non-existent output dir with missing parents is created. On Unix: the created output root has mode `0700`, and a parent with mode `0777` without the sticky bit is refused, while `/tmp`-style `1777` is accepted.
+### M12 — mask remembers the prefix per project (D141, added in P8)
+Type: auto
+Mask a folder with `Infra_Mask_`: the vault remembers `Infra_Mask_` for that folder's key, in memory and after a reopen from disk; another folder has none; the plaintext JSON does not contain the input path. A mask with `Zed_Mask_` that fails at the vault save (the D28 lock is held) leaves `Infra_Mask_` remembered, in memory and on disk. A mask with `VEILCODE_` removes it (memory and disk) and the JSON has no `project_prefixes` member. The masked output passes `assert_no_secret`.
 ### R1 — round trip
 Type: auto
 Mask, then restore. The restored tree equals the input tree, excluding `.git` and not-copied files.
@@ -374,6 +398,40 @@ Inject an output write failure, either with a test-only write-failure hook in th
 Type: auto
 Make persist fail: modify `vault.vc` from a second handle, or hold the D28 tmp lock, after the outputs are written. Then run each of forget (clean restore), delete_session and purge. Pass when, after each, the in-memory vault lists exactly the sessions a fresh open of the file lists, and the error is returned.
 
+### R14 — custom prefix round trip (D138, added in P8)
+Type: auto
+Mask a tree with the prefix `Infra_Mask_`: every token in the output starts with `Infra_Mask_`, no `VEILCODE_` token is written, and restore gives back the input byte for byte with 0 unknown, 0 missing and 0 new secrets. Text in the input that already contains `Infra_Mask_` without a token shape after it is kept unchanged and is not reported as unknown. Reports pass `assert_no_secret`.
+### R15 — mixed-prefix vault and pre-v1.4 vaults (D138, added in P8)
+Type: auto
+- One vault with a `VEILCODE_` session and an `Infra_Mask_` session: restoring text that holds tokens of both replaces both, including a custom-prefix token directly after text ending in `VEILCODE_` (D29 across prefixes).
+- A vault whose plaintext JSON has the pre-v1.4 shape (no `prefix` fields) opens and restores unchanged.
+- A token-shaped string with a known custom prefix that is not in the vault is reported as unknown; for a custom prefix, a shape whose HEX8 has no `a`–`f` is not (sec L3), the default prefix is unchanged.
+### R15b — the longest vault token wins across prefixes (D138 fix round, QA G2)
+Type: auto
+With the prefixes `A_` and `A_B_ab000000_` and the vault tokens `A_B_ab000000` and `A_B_ab000000_K_cd000000` (both starting at the same offset), restoring `A_B_ab000000_K_cd000000` replaces the longer token; the shorter one alone is still replaced. (The pair `A_` and `A_B_` cannot give two tokens at one offset once HEX8 needs a letter, so a prefix with lowercase hex is used.) Reversing the length comparison in the matcher makes this test fail.
+### R16 — token split across chunks with a long prefix (D138, added in P8)
+Type: auto
+The D71 counter, fed a vault token with a 16-character prefix split at every byte position across two chunks, counts it exactly once; a non-vault string of the same shape counts 0.
+### R17 — custom-prefix tokens are not new secrets (D138, added in P8)
+Type: auto
+After masking a `.env` file with a custom prefix, restoring the masked folder reports 0 new secrets (the `KEY=<token>` lines are not reported), as R8 does for `VEILCODE_`.
+### VW1 — finding view: context with values masked (D137, added in P8)
+Type: auto
+`view_finding` on a scanned file returns up to 15 lines before and after the finding with correct line numbers, marks the finding's lines as hits, and splits each line into plain, selected-value and other-value parts; on a line without other findings the parts concatenate to the file line (without its line ending). Other findings of the same file are other-value parts that hold no text, so their values are never read into the view. Fix round (sec H1): `view_finding` holds no value bytes for the viewed finding either (its parts carry only offsets and lengths); `reveal_finding` reads the file again and fills only the viewed finding's parts; `hide_values` empties them again. `assert_no_secret` passes on the Debug output and on the concatenated text of every part before Reveal and after hide. A value spanning several lines is split per line. With overlapping finding spans (sec L2), no byte of another finding is ever a plain part, hidden or revealed.
+### VW2 — finding view limits (D137, added in P8)
+Type: auto
+- A file over 2 MiB gives `TooLarge`.
+- A file whose sha256 differs from the scan gives `Changed`; an unknown finding id is an error.
+- On a 50 000-byte minified line, at most 120 bytes are kept on each side of the value, the cuts are marked with `…`, and every cut is on a UTF-8 character boundary.
+- A line without the finding is cut after 240 bytes, and a value longer than 256 bytes is cut after 256 bytes, each marked with `…`.
+- Invalid UTF-8 bytes next to a finding are shown as U+FFFD; the lossy text equals `String::from_utf8_lossy` and is built in a buffer sized for the worst case that never grows (Info 2).
+### VW3 — finding view path safety (D137, added in P8)
+Type: auto
+Refused with an error and no read: a `rel_path` with `..`, an absolute or drive path, or a backslash; on Unix, a symlinked directory or a symlinked file below the root, and a directory where a file was. The error messages contain no file content. On Unix the file open itself does not follow a link (`O_NOFOLLOW`, Info 4).
+### VW3b — links inside the scanned folder are refused (D137 fix round, QA G1)
+Type: auto
+On Unix, `link.txt -> real.txt` and `linkdir -> realdir`, both inside the root, are refused with `NotViewable`, while `real.txt` itself is shown. Replacing `symlink_metadata` with `metadata` in the path walk makes this test fail. (Removing the canonical-path check is not caught by any test on Unix: the walk already refuses every link, and the remaining escapes, such as bind mounts or Windows junctions, cannot be built in an unprivileged Unix test.)
+
 ## P4 — CLI (runs the real binary, `env!("CARGO_BIN_EXE_veilcode")`)
 ### C1 — end-to-end
 Type: auto
@@ -469,6 +527,13 @@ Through the binary with `--profile <tmp>`:
 - A bad key name exits 2.
 
 Every stdout and stderr passes `assert_no_secret`.
+### C10 — `mask --token-prefix` (D138, added in P8)
+Type: auto
+Through the binary: `mask --token-prefix Infra_Mask_` writes tokens with that prefix, and `restore` gives back the input byte for byte. An invalid `--token-prefix` (`1bad_`, `NoUnderscore`, 17 characters) exits 2 with the rule in the message, and creates no vault and no output folder (it is refused before the passphrase is read). `mask --help` lists `--token-prefix`. A `.env` holding a token of the chosen prefix plus a password: the output says "masked 1 secrets" and "1 findings already were placeholder tokens (not masked again)", and the token is kept. Every stdout and stderr passes `assert_no_secret`.
+
+### C11 — `mask` uses the prefix remembered for the folder (D141, added in P8)
+Type: auto
+Through the binary, with one vault: `mask` with `--token-prefix Infra_Mask_` prints "placeholder prefix: Infra_Mask_ (from --token-prefix)"; a second `mask` of the same folder without the flag prints "placeholder prefix: Infra_Mask_ (remembered for this folder)" and writes `Infra_Mask_` tokens and no `VEILCODE_` token; a `mask` of another folder prints "placeholder prefix: VEILCODE_ (default)"; `--token-prefix VEILCODE_` prints "(from --token-prefix)" and writes `VEILCODE_` tokens; the next `mask` without the flag prints "placeholder prefix: VEILCODE_ (default)". `mask --help` mentions the remembered prefix. Every stdout and stderr passes `assert_no_secret`.
 
 ## P5 — CLI release
 ### REL1 — release artifacts
@@ -577,6 +642,52 @@ App-state tests. Pass when:
 - Lock now resets to the locked state.
 
 The Debug output of the rail and the cards passes `assert_no_secret`.
+### G15 — input-folder pickers list files (D135, added in P8)
+Type: auto
+- For the Scan input and the Restore input, the app's picker settings are `PickDirectory` with files shown, and the opened dialog reports `DialogMode::PickDirectory`.
+- The other pickers are unchanged: the output folders, the separate vault and the profile use the save dialog, and opening a vault uses the pick-file dialog.
+- A picked path that is a file is refused for the Scan and Restore inputs with "choose a folder, not a file", and the field is left unchanged.
+### G15b — the real input dialogs are folder pickers (D135 fix round, QA G5)
+Type: auto
+The dialogs `open_dialog` returns for the Scan input and the Restore input report `DialogMode::PickDirectory`; the Mask output dialog reports `SaveFile` and the open-vault dialog `PickFile`. egui-file-dialog 0.15.0 has no getter for its files flag, so "files shown" is asserted on `picker_settings` (which `open_dialog` uses), not on the dialog itself.
+### G16 — rescan (D136, added in P8)
+Type: auto
+App-state tests. Pass when:
+- with no scan, `rescan()` returns `NoScan` and `can_rescan()` is false;
+- while a job runs, `rescan()` returns `Busy`;
+- after a scan with one finding unticked and the review confirmed, a changed file plus `rescan()` scans the same folder again: the new finding is listed, every finding is ticked, the review is not confirmed, the scan card shows the new count, and an open viewer is closed.
+### G16b — a failed rescan keeps the review (D136 fix round, QA G3)
+Type: auto
+With one finding unticked, the review confirmed and the viewer open, the scanned folder is moved away and `rescan()` runs: the job fails with an error, and the untick, the confirmation and the viewer are all still there.
+### G17 — finding viewer state (D137, added in P8)
+Type: auto
+App-state tests with temp dirs. Pass when:
+- `view_finding(id)` while locked returns `Locked`, and with an unknown id `UnknownFinding`;
+- after it, the viewer model has the file lines, and the selected value is shown as the mask `••••••` until `toggle_reveal()`; before the toggle no part of the state holds a secret (Debug output and every part's text, sec H1); the toggle runs a worker job that reads the file again, after which the value is shown and held; a second toggle hides it and the held text no longer contains it;
+- opening another finding starts hidden again, and `close_viewer()` drops the viewer;
+- `lock()` drops the viewer and increments the viewer-wipe counter, and a view result that arrives after a lock (deferred runner) is discarded and wiped;
+- the Debug output of the viewer model passes `assert_no_secret`, hidden and revealed.
+### G18 — placeholder prefix field (D138, added in P8)
+Type: auto
+- The Mask form defaults to `VEILCODE_`.
+- An invalid prefix makes the form's problem list return the rule, and `mask()` refuses it before any job.
+- A valid custom prefix reaches core: the masked output holds tokens with that prefix and no `VEILCODE_` token.
+- A file holding a token of the chosen prefix: the mask view has `already_tokens` 1, the card shows "Already placeholder tokens (not masked again): 1", and the file is copied unchanged.
+### G20 — placeholder prefix remembered per project (D141, added in P8)
+Type: auto
+App-state tests with temp dirs. Pass when:
+- the first scan after unlock offers the fill `VEILCODE_` once and no remembered prefix; after a mask with `Infra_Mask_` the remembered prefix is `Infra_Mask_`, and `prefix_hint` returns "remembered for this project" for `Infra_Mask_` and nothing for another text;
+- a Rescan offers no fill; after lock and unlock (vault read from disk) a scan of the same folder offers `Infra_Mask_`; a scan of another folder offers `VEILCODE_` with no remembered prefix; scanning the first folder again offers `Infra_Mask_`; a mask with `VEILCODE_` leaves no remembered prefix;
+- a mask into a separate vault (D64) with `Infra_Mask_` leaves the main vault without a remembered prefix, and the separate vault remembers `Infra_Mask_`;
+- with the app forms (`sync_lock`): a scan fills the field, a typed prefix is reset to `VEILCODE_` by lock, and after unlock a scan of the masked folder fills `Infra_Mask_`.
+### G19 — manual QA of the P8 features (D135–D138)
+Type: manual
+On Windows 11 with the release build, light and dark theme:
+- the Scan and Restore folder pickers list files (not greyed), and a file cannot be submitted;
+- Rescan picks up a file edited in Explorer, and the hint is shown;
+- double-click and "View" open the viewer; the value is masked until Reveal; long minified lines are cut; closing and re-opening hides the value; Lock now closes the viewer; no external program opens;
+- a custom prefix such as `Infra_Mask_` masks and restores, and an invalid prefix disables "Start mask" with the message.
+- D141: after a mask with `Infra_Mask_` while another session keeps the vault, Lock, unlock and scan the same folder: the field shows `Infra_Mask_` with "remembered for this project"; "Reset to default" sets `VEILCODE_`; another folder shows `VEILCODE_`.
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

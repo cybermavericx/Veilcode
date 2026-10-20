@@ -7,8 +7,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use veilcode_core::{
-    CoreError, IgnoreEntry, MaskOptions, Profile, ScanOptions, ScanReport, Selection, SessionId,
-    Vault, to_json,
+    CoreError, IgnoreEntry, MaskOptions, Profile, ProjectKey, ScanOptions, ScanReport, Selection,
+    SessionId, TokenPrefix, Vault, to_json,
 };
 
 pub fn run(cli: &Cli) -> Result<()> {
@@ -140,10 +140,25 @@ fn mask(cli: &Cli, a: &MaskArgs) -> Result<()> {
     let opts = MaskOptions {
         include_unscanned: a.include_unscanned,
         ttl_days: a.ttl_days,
+        token_prefix: mask_prefix(a, &vault)?,
     };
     let rep = veilcode_core::mask(&report, &Selection::All, &a.dir, &a.out, &mut vault, &opts)?;
     output::mask(&rep, a.ttl_days);
     write_report(cli, Some(&a.dir), &to_json(&rep)?)
+}
+
+/// D141: `--token-prefix`, else the prefix remembered for the folder,
+/// else the default; prints which one is used.
+fn mask_prefix(a: &MaskArgs, vault: &Vault) -> Result<TokenPrefix> {
+    let (prefix, source) = match &a.token_prefix {
+        Some(p) => (p.clone(), "from --token-prefix"),
+        None => match vault.remembered_prefix(&ProjectKey::for_input(&a.dir)?) {
+            Some(p) => (p.clone(), "remembered for this folder"),
+            None => (TokenPrefix::default(), "default"),
+        },
+    };
+    output::prefix_used(&prefix, source);
+    Ok(prefix)
 }
 
 /// D89: the findings file, read through `take(64 MiB)`.

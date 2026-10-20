@@ -7,8 +7,8 @@ use crate::report::MaskReport;
 use crate::scan::walk::{self, Class, FileEntry};
 use crate::scan::{Finding, ScanReport, Skipped};
 use crate::secret::SecretBytes;
-use crate::token::Token;
-use crate::vault::{DEFAULT_TTL_DAYS, Vault, ttl_secs};
+use crate::token::{KnownPrefixes, Token, TokenPrefix};
+use crate::vault::{DEFAULT_TTL_DAYS, ProjectKey, Vault, ttl_secs};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -31,6 +31,8 @@ pub struct MaskOptions {
     pub include_unscanned: bool,
     /// Session lifetime in days, 1–365 (D61).
     pub ttl_days: u32,
+    /// The placeholder prefix of new tokens (D138; default `VEILCODE_`).
+    pub token_prefix: TokenPrefix,
 }
 
 impl Default for MaskOptions {
@@ -38,6 +40,7 @@ impl Default for MaskOptions {
         MaskOptions {
             include_unscanned: false,
             ttl_days: DEFAULT_TTL_DAYS,
+            token_prefix: TokenPrefix::default(),
         }
     }
 }
@@ -81,6 +84,7 @@ pub fn mask(
     let ignored_by_profile = count_ignored(report, &selected);
     let tree = read_input(report, input)?;
     let by_file = check_findings(&tree, &selected)?;
+    let project = ProjectKey::for_input(input)?;
     let out = OutputDir::prepare(out, input)?;
     // D69: on any later error remove our output; keep memory equal to disk.
     let before = vault.snapshot();
@@ -92,6 +96,7 @@ pub fn mask(
         tree: &tree,
         by_file: &by_file,
         label: &label,
+        project,
         opts,
         ignored_by_profile,
     };
@@ -107,13 +112,17 @@ struct Run<'a> {
     tree: &'a Input,
     by_file: &'a [Vec<&'a Finding>],
     label: &'a str,
+    /// The input's project key: its prefix is remembered on success (D141).
+    project: ProjectKey,
     opts: &'a MaskOptions,
     ignored_by_profile: usize,
 }
 
 /// SPEC §6.1 steps 4–6 into the freshly created `out`.
 fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskReport> {
-    let (plans, session_tokens) = assign_tokens(vault, run.tree, run.by_file)?;
+    let prefix = &run.opts.token_prefix;
+    let (plans, session_tokens, already_tokens) =
+        assign_tokens(vault, run.tree, run.by_file, prefix)?;
     let mut files_written = write_dirs_and_text(out, run.tree, &plans)?;
     let mut not_copied = skipped_paths(&run.tree.skipped);
     for (rel, entry) in &run.tree.unscanned {
@@ -128,6 +137,7 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
     let tokens = session_tokens.len();
     let options = run.report.options.clone();
     let session_id = vault.add_session(run.label, session_tokens, run.opts.ttl_days, options)?;
+    vault.remember_prefix(run.project.clone(), prefix);
     vault.save()?;
     Ok(MaskReport {
         session_id,
@@ -136,6 +146,7 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
         tokens,
         not_copied,
         ignored_by_profile: run.ignored_by_profile,
+        already_tokens,
     })
 }
 
@@ -251,24 +262,46 @@ fn check_findings<'a>(tree: &Input, selected: &[&'a Finding]) -> Result<Vec<Vec<
     Ok(by_file)
 }
 
-/// SPEC §6.1 step 4: a token per selected span (deduplicated by value in
-/// the vault). Also returns the session's distinct tokens in first-seen order.
+/// The replacements per file, the session's tokens and the number of
+/// selected spans that already were tokens.
+type Assigned = (Vec<Vec<Replacement>>, Vec<Token>, usize);
+
+/// SPEC §6.1 step 4: a `prefix` token per selected span (deduplicated by
+/// value and prefix in the vault). Also returns the session's distinct
+/// tokens in first-seen order and how many spans were skipped as tokens.
 fn assign_tokens(
     vault: &mut Vault,
     tree: &Input,
     by_file: &[Vec<&Finding>],
-) -> Result<(Vec<Vec<Replacement>>, Vec<Token>)> {
+    prefix: &TokenPrefix,
+) -> Result<Assigned> {
     let haystacks: Vec<&[u8]> = tree.text.iter().map(|t| t.content.as_slice()).collect();
+    // G4: a span that is already a token of the chosen prefix or of any
+    // prefix in the vault is never masked again (as D48a in the scanner).
+    let known = vault.known_prefixes().with(prefix);
     let mut session = Vec::new();
     let mut plans = Vec::with_capacity(by_file.len());
+    let mut already = 0;
     for (file, findings) in tree.text.iter().zip(by_file) {
         let ctx = Haystack {
             content: &file.content,
             all: &haystacks,
         };
-        plans.push(plan_spans(vault, &ctx, findings, &mut session)?);
+        let real = not_tokens(&file.content, findings, &known);
+        already += findings.len() - real.len();
+        plans.push(plan_spans(vault, &ctx, &real, prefix, &mut session)?);
     }
-    Ok((plans, session))
+    Ok((plans, session, already))
+}
+
+/// The findings whose span is not exactly a `known` token.
+fn not_tokens<'f>(
+    content: &[u8],
+    findings: &[&'f Finding],
+    known: &KnownPrefixes,
+) -> Vec<&'f Finding> {
+    let real = |f: &&&Finding| !known.is_exact(&content[f.start..f.end]);
+    findings.iter().filter(real).copied().collect()
 }
 
 /// One text and every input text (for the token collision check, SPEC §4).
@@ -277,19 +310,21 @@ pub(crate) struct Haystack<'a> {
     pub(crate) all: &'a [&'a [u8]],
 }
 
-/// Gets or creates the token for each finding's span of `text.content`,
-/// adding new ones to `session`. Values are held only in `SecretBytes`.
+/// Gets or creates the `prefix` token for each finding's span of
+/// `text.content`, adding new ones to `session`. Values are held only in
+/// `SecretBytes`.
 pub(crate) fn plan_spans(
     vault: &mut Vault,
     text: &Haystack<'_>,
     findings: &[&Finding],
+    prefix: &TokenPrefix,
     session: &mut Vec<Token>,
 ) -> Result<Vec<Replacement>> {
     let mut plan = Vec::with_capacity(findings.len());
     for f in findings {
         let value = SecretBytes::new(text.content[f.start..f.end].to_vec());
         let name = f.key_name.as_deref().unwrap_or("");
-        let token = vault.get_or_create_token(&value, name, &f.rule_id, text.all)?;
+        let token = vault.get_or_create_token_with(&value, name, &f.rule_id, prefix, text.all)?;
         if !session.contains(&token) {
             session.push(token.clone());
         }

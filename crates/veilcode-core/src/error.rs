@@ -121,6 +121,19 @@ pub enum CoreError {
     /// A report could not be encoded as JSON.
     #[error("report could not be encoded as JSON")]
     ReportEncode,
+    /// A placeholder prefix breaks the D138 rule. The input is not quoted.
+    #[error(
+        "placeholder prefix must be 2–16 ASCII characters: a letter first, \
+         then letters, digits or _, ending with _"
+    )]
+    BadTokenPrefix,
+    /// A custom prefix starts with `VEILCODE_` (L4).
+    #[error("a placeholder prefix other than VEILCODE_ must not start with VEILCODE_")]
+    ReservedTokenPrefix,
+    /// The finding viewer refused a path: not a regular file reached
+    /// without links inside the scanned folder (D137).
+    #[error("cannot show {rel_path}: not a regular file inside the scanned folder")]
+    NotViewable { rel_path: String },
 }
 
 impl CoreError {

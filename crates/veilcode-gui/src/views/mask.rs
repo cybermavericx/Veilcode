@@ -2,9 +2,9 @@
 
 use super::{chrome, clear_fields, pass_row, path_row};
 use crate::app::{Forms, Target, typed_path};
-use crate::state::{AppState, MaskForm, Screen, SeparateVault};
+use crate::state::{AppState, MaskForm, Screen, SeparateVault, prefix_hint, prefix_problem};
 use eframe::egui;
-use veilcode_core::SecretString;
+use veilcode_core::{DEFAULT_PREFIX, SecretString};
 
 /// Egui ids of the separate-vault passphrase fields.
 pub const PASS: &str = "mask-separate-pass";
@@ -18,9 +18,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
             state.screen = Screen::Review;
         }
     } else {
-        options(ui, forms);
+        options(ui, state, forms);
         let vault_ok = !forms.separate || typed_path(&forms.separate_path).is_some();
-        let ok = !state.is_busy() && vault_ok && typed_path(&forms.mask_out).is_some();
+        let prefix_ok = prefix_problem(&forms.token_prefix).is_none();
+        let ok = !state.is_busy() && vault_ok && prefix_ok && typed_path(&forms.mask_out).is_some();
         if ui
             .add_enabled(ok, egui::Button::new("Start mask"))
             .clicked()
@@ -34,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
     }
 }
 
-fn options(ui: &mut egui::Ui, forms: &mut Forms) {
+fn options(ui: &mut egui::Ui, state: &AppState, forms: &mut Forms) {
     let hint = "a new folder outside the project (must not exist)";
     path_row(
         ui,
@@ -52,6 +53,7 @@ fn options(ui: &mut egui::Ui, forms: &mut Forms) {
                 .suffix(" days"),
         );
     });
+    prefix_row(ui, state, forms);
     ui.checkbox(&mut forms.separate, "Separate vault for this project");
     if forms.separate {
         let hint = "project vault file, e.g. myproject.vc";
@@ -73,6 +75,33 @@ fn options(ui: &mut egui::Ui, forms: &mut Forms) {
     }
 }
 
+/// D138: the placeholder prefix, with the rule shown while it is invalid;
+/// D141: the remembered-prefix hint and "Reset to default".
+fn prefix_row(ui: &mut egui::Ui, state: &AppState, forms: &mut Forms) {
+    ui.horizontal(|ui| {
+        ui.label("Placeholder prefix:");
+        ui.add(
+            egui::TextEdit::singleline(&mut forms.token_prefix)
+                .hint_text(DEFAULT_PREFIX)
+                .desired_width(160.0),
+        );
+        let custom = forms.token_prefix != DEFAULT_PREFIX;
+        if ui
+            .add_enabled(custom, egui::Button::new("Reset to default"))
+            .clicked()
+        {
+            forms.token_prefix = DEFAULT_PREFIX.to_string();
+        }
+        if let Some(hint) = prefix_hint(state.remembered_prefix(), &forms.token_prefix) {
+            ui.weak(hint);
+        }
+    });
+    ui.weak("tokens look like <prefix>DB_PASSWORD_1a2b3c4d");
+    if let Some(problem) = prefix_problem(&forms.token_prefix) {
+        ui.colored_label(ui.visuals().error_fg_color, problem.to_string());
+    }
+}
+
 pub(super) fn submit(state: &mut AppState, forms: &mut Forms, ctx: &egui::Context) {
     let Some(out) = typed_path(&forms.mask_out) else {
         return;
@@ -89,6 +118,7 @@ pub(super) fn submit(state: &mut AppState, forms: &mut Forms, ctx: &egui::Contex
     let form = MaskForm {
         ttl_days: forms.ttl_days,
         separate_vault,
+        token_prefix: forms.token_prefix.clone(),
     };
     let r = state.mask(out, form);
     state.report(r);

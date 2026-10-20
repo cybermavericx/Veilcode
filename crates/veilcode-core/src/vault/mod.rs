@@ -3,9 +3,11 @@
 mod crypto;
 mod format;
 mod model;
+mod project;
 mod session;
 
 pub use model::{Session, SessionId};
+pub use project::ProjectKey;
 pub(crate) use session::{DEFAULT_TTL_DAYS, ttl_secs};
 pub use session::{PurgeResult, VaultStatus};
 
@@ -15,7 +17,7 @@ use crate::hex;
 use crate::rng::{OsRandom, RandomSource};
 use crate::scan::ScanOptions;
 use crate::secret::{SecretBytes, SecretString};
-use crate::token::{Token, TokenGen};
+use crate::token::{KnownPrefixes, Token, TokenGen, TokenPrefix};
 use crypto::Key;
 pub(crate) use format::KdfParams;
 use format::{HEADER_LEN, Header, NONCE_LEN, SALT_LEN};
@@ -187,8 +189,7 @@ impl Vault {
         }
     }
 
-    /// The token for `value`, creating an entry if the value is new.
-    /// NAME comes from `name`, or from `rule_id` when `name` is empty (SPEC §4).
+    /// The default-prefix token for `value` (see `get_or_create_token_with`).
     pub fn get_or_create_token(
         &mut self,
         value: &SecretBytes,
@@ -196,24 +197,70 @@ impl Vault {
         rule_id: &str,
         input_haystacks: &[&[u8]],
     ) -> Result<Token> {
+        let prefix = TokenPrefix::default();
+        self.get_or_create_token_with(value, name, rule_id, &prefix, input_haystacks)
+    }
+
+    /// The `prefix` token for `value`, creating an entry if this value has
+    /// no token with this prefix yet (dedupe per value and prefix, D138).
+    /// NAME comes from `name`, or from `rule_id` when `name` is empty (SPEC §4).
+    pub fn get_or_create_token_with(
+        &mut self,
+        value: &SecretBytes,
+        name: &str,
+        rule_id: &str,
+        prefix: &TokenPrefix,
+        input_haystacks: &[&[u8]],
+    ) -> Result<Token> {
         if value.is_empty() {
             return Err(CoreError::EmptyValue);
         }
-        let found = self.data.entries.iter().find(|(_, e)| e.value == *value);
-        if let Some((token, _)) = found {
+        let same = |e: &Entry| e.value == *value && e.prefix == *prefix;
+        if let Some((token, _)) = self.data.entries.iter().find(|(_, e)| same(e)) {
             return Ok(token.clone());
         }
         let base = if name.is_empty() { rule_id } else { name };
         let entries = &self.data.entries;
-        let token =
-            TokenGen::new(OsRandom).generate(base, |t| entries.contains_key(t), input_haystacks)?;
+        let exists = |t: &Token| entries.contains_key(t);
+        let token = TokenGen::new(OsRandom).generate(base, prefix, exists, input_haystacks)?;
         let entry = Entry {
             value: value.clone(),
             name: name.to_string(),
             rule_id: rule_id.to_string(),
+            prefix: prefix.clone(),
         };
         self.data.entries.insert(token.clone(), entry);
         Ok(token)
+    }
+
+    /// The prefixes of every entry, plus the default (D138).
+    pub(crate) fn known_prefixes(&self) -> KnownPrefixes {
+        KnownPrefixes::new(self.data.entries.values().map(|e| &e.prefix))
+    }
+
+    /// Test shorthand: an entry with exactly `token` (R15b).
+    #[cfg(test)]
+    pub(crate) fn insert_test_entry(
+        &mut self,
+        token: &str,
+        prefix: &TokenPrefix,
+        value: SecretBytes,
+    ) -> Token {
+        let t = Token::parse_with(token, prefix).expect("token of its prefix");
+        let entry = Entry {
+            value,
+            name: "k".to_string(),
+            rule_id: "r".to_string(),
+            prefix: prefix.clone(),
+        };
+        self.data.entries.insert(t.clone(), entry);
+        t
+    }
+
+    /// The plaintext JSON the next save would encrypt (R15).
+    #[cfg(test)]
+    pub(crate) fn plaintext_json(&self) -> zeroize::Zeroizing<Vec<u8>> {
+        self.data.to_json().expect("json")
     }
 
     /// The secret for `token`. Crate-internal: only restore reads values.
@@ -570,6 +617,57 @@ mod tests {
         }
         assert_eq!(seen.len(), 10_000);
         assert_eq!(v.data.entries.len(), 10_000);
+    }
+
+    #[test]
+    fn t10_two_prefixes_save_and_open_with_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let custom = TokenPrefix::parse("Infra_Mask_").expect("prefix");
+        let (a, b) = (fake_password(), fake_password());
+        let ta = v
+            .get_or_create_token(&secret(&a), "db", "r", &[])
+            .expect("token");
+        let tb = v
+            .get_or_create_token_with(&secret(&b), "db", "r", &custom, &[])
+            .expect("token");
+        assert!(ta.as_str().starts_with("VEILCODE_DB_"));
+        assert!(tb.as_str().starts_with("Infra_Mask_DB_"));
+        v.add_test_session("s", vec![ta.clone(), tb.clone()])
+            .expect("session");
+        v.save().expect("save");
+        let r = Vault::open(&dir.path().join("vault.vc"), &test_pass()).expect("open");
+        assert_eq!(r.value(&ta).map(|s| s.expose()), Some(a.as_bytes()));
+        assert_eq!(r.value(&tb).map(|s| s.expose()), Some(b.as_bytes()));
+        assert_eq!(r.data.entries[&ta].prefix, TokenPrefix::default());
+        assert_eq!(r.data.entries[&tb].prefix, custom);
+        let known: Vec<String> = r
+            .known_prefixes()
+            .list()
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        assert_eq!(known, vec!["Infra_Mask_", "VEILCODE_"]);
+    }
+
+    #[test]
+    fn t10_dedupe_is_per_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut v = test_vault(dir.path());
+        let custom = TokenPrefix::parse("Infra_Mask_").expect("prefix");
+        let val = secret(&fake_password());
+        let d1 = v.get_or_create_token(&val, "k", "r", &[]).expect("token");
+        let c1 = v
+            .get_or_create_token_with(&val, "k", "r", &custom, &[])
+            .expect("token");
+        let c2 = v
+            .get_or_create_token_with(&val, "other", "r", &custom, &[])
+            .expect("token");
+        let d2 = v.get_or_create_token(&val, "x", "r", &[]).expect("token");
+        assert_eq!((c1.clone(), d1.clone()), (c2, d2));
+        assert_ne!(c1, d1);
+        assert!(c1.as_str().starts_with("Infra_Mask_K_"));
+        assert_eq!(v.data.entries.len(), 2);
     }
 
     #[test]

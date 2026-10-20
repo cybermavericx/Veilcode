@@ -2,6 +2,7 @@
 
 use clap::{ArgGroup, Args, Parser, Subcommand, value_parser};
 use std::path::PathBuf;
+use veilcode_core::TokenPrefix;
 
 const AFTER_HELP: &str = "\
 Veilcode works offline. It never modifies the input folder and never prints secret values.
@@ -89,6 +90,13 @@ pub struct MaskArgs {
     /// Days until the session expires (1–365).
     #[arg(long, default_value_t = 30, value_parser = value_parser!(u32).range(1..=365))]
     pub ttl_days: u32,
+    /// Placeholder prefix of new tokens: 2–16 ASCII characters, a letter
+    /// first, then letters, digits or _, ending with _ (D138). Without it,
+    /// the prefix remembered for this folder in the vault is used, else
+    /// VEILCODE_. The prefix used is remembered for this folder; pass
+    /// --token-prefix VEILCODE_ to go back to the default (D141).
+    #[arg(long, value_name = "PREFIX", value_parser = TokenPrefix::parse)]
+    pub token_prefix: Option<TokenPrefix>,
 }
 
 #[derive(Subcommand)]

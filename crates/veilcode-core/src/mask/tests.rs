@@ -3,7 +3,9 @@
 use super::*;
 use crate::error::CoreError;
 use crate::test_support::*;
-use std::path::PathBuf;
+use crate::token::TokenPrefix;
+use crate::vault::ProjectKey;
+use std::path::{Path, PathBuf};
 
 struct Dirs {
     tmp: tempfile::TempDir,
@@ -394,4 +396,140 @@ fn m11_unix_modes_and_unsafe_parent() {
     chmod(&open, 0o1777);
     mask(&report, &Selection::All, &d.input, &out, &mut vault, &opts).expect("sticky ok");
     assert_eq!(mode(&out), 0o700);
+}
+
+fn opts_with(prefix: &str) -> MaskOptions {
+    MaskOptions {
+        token_prefix: TokenPrefix::parse(prefix).expect("prefix"),
+        ..MaskOptions::default()
+    }
+}
+
+#[test]
+fn s8c_tokens_of_vault_prefixes_are_not_masked_again() {
+    let d = dirs();
+    let mut vault = test_vault(d.tmp.path());
+    let pw1 = fake_password();
+    write_tree(
+        &d.input,
+        &[(".env", format!("DB_PASSWORD={pw1}\n").as_bytes())],
+    );
+    let first = scan_dir(&d.input);
+    mask(
+        &first,
+        &Selection::All,
+        &d.input,
+        &d.out,
+        &mut vault,
+        &opts_with("Infra_Mask_"),
+    )
+    .expect("first mask");
+    let masked = String::from_utf8(read(&d.out, ".env")).expect("utf8");
+    let token = masked
+        .trim_end()
+        .trim_start_matches("DB_PASSWORD=")
+        .to_string();
+    assert!(token.starts_with("Infra_Mask_DB_PASSWORD_"), "{token}");
+    // A second project holds that token; a plain scan (no vault) reports it.
+    let (input2, out2) = (d.tmp.path().join("in2"), d.tmp.path().join("out2"));
+    let pw2 = fake_password();
+    let env = format!("OLD_PASSWORD={token}\nNEW_PASSWORD={pw2}\n");
+    write_tree(&input2, &[(".env", env.as_bytes())]);
+    let report = scan_dir(&input2);
+    assert_eq!(report.findings.len(), 2, "plain scan sees the custom token");
+    let m = mask(
+        &report,
+        &Selection::All,
+        &input2,
+        &out2,
+        &mut vault,
+        &MaskOptions::default(),
+    )
+    .expect("second mask");
+    assert_eq!((m.secrets_masked, m.already_tokens), (1, 1));
+    let out = String::from_utf8(read(&out2, ".env")).expect("utf8");
+    let want = format!("OLD_PASSWORD={token}\nNEW_PASSWORD=VEILCODE_NEW_PASSWORD_");
+    assert!(out.starts_with(&want), "{out}");
+    assert_no_secret(out.as_bytes(), &[&pw1, &pw2]);
+}
+
+#[test]
+fn s8c_tokens_of_the_chosen_prefix_are_not_masked_again() {
+    let d = dirs();
+    let mut vault = test_vault(d.tmp.path());
+    let pw = fake_password();
+    let env = format!("API_KEY=Zed_Mask_API_KEY_abcdef01\nDB_PASSWORD={pw}\n");
+    write_tree(&d.input, &[(".env", env.as_bytes())]);
+    let report = scan_dir(&d.input);
+    assert_eq!(report.findings.len(), 2);
+    let m = mask(
+        &report,
+        &Selection::All,
+        &d.input,
+        &d.out,
+        &mut vault,
+        &opts_with("Zed_Mask_"),
+    )
+    .expect("mask");
+    assert_eq!((m.secrets_masked, m.already_tokens), (1, 1));
+    let out = String::from_utf8(read(&d.out, ".env")).expect("utf8");
+    let want = "API_KEY=Zed_Mask_API_KEY_abcdef01\nDB_PASSWORD=Zed_Mask_DB_PASSWORD_";
+    assert!(out.starts_with(want), "{out}");
+}
+
+/// Masks `input` into `out` with `prefix` and the vault in `d`.
+fn mask_with(input: &Path, out: &Path, vault: &mut Vault, prefix: &str) -> Result<MaskReport> {
+    let report = scan_dir(input);
+    mask(
+        &report,
+        &Selection::All,
+        input,
+        out,
+        vault,
+        &opts_with(prefix),
+    )
+}
+
+fn reopen(d: &Dirs) -> Vault {
+    Vault::open(&d.tmp.path().join("vault.vc"), &test_pass()).expect("open")
+}
+
+#[test]
+fn m12_mask_remembers_the_prefix_per_project() {
+    let d = dirs();
+    let s = sample_tree(&d.input);
+    let other = d.tmp.path().join("other");
+    sample_tree(&other);
+    let (key, other_key) = (
+        ProjectKey::for_input(&d.input).expect("key"),
+        ProjectKey::for_input(&other).expect("key"),
+    );
+    let mut vault = test_vault(d.tmp.path());
+    mask_with(&d.input, &d.out, &mut vault, "Infra_Mask_").expect("mask");
+    let infra = TokenPrefix::parse("Infra_Mask_").expect("prefix");
+    assert_eq!(vault.remembered_prefix(&key), Some(&infra));
+    assert_eq!(reopen(&d).remembered_prefix(&key), Some(&infra), "saved");
+    assert_eq!(vault.remembered_prefix(&other_key), None);
+    let json = String::from_utf8(vault.plaintext_json().to_vec()).expect("utf8");
+    let input_text = d.input.to_string_lossy().into_owned();
+    assert!(!json.contains(&input_text), "input path in the vault");
+    // A mask that fails at the vault save (D28 lock held) changes nothing.
+    let lock = d.tmp.path().join("vault.vc.tmp");
+    std::fs::write(&lock, b"").expect("lock");
+    let failed = d.tmp.path().join("failed");
+    let err = mask_with(&d.input, &failed, &mut vault, "Zed_Mask_").err();
+    let locked = matches!(&err, Some(CoreError::PartialOutput { cause, .. })
+        if matches!(**cause, CoreError::SaveLocked));
+    assert!(locked, "{err:?}");
+    std::fs::remove_file(&lock).expect("unlock");
+    assert_eq!(vault.remembered_prefix(&key), Some(&infra));
+    assert_eq!(reopen(&d).remembered_prefix(&key), Some(&infra));
+    // Masking with the default prefix forgets it.
+    let out2 = d.tmp.path().join("out2");
+    mask_with(&d.input, &out2, &mut vault, "VEILCODE_").expect("mask");
+    assert_eq!(vault.remembered_prefix(&key), None);
+    assert_eq!(reopen(&d).remembered_prefix(&key), None);
+    let json = String::from_utf8(vault.plaintext_json().to_vec()).expect("utf8");
+    assert!(!json.contains("project_prefixes"), "pre-D141 shape");
+    assert_no_secret(&all_bytes(&out2), &s.all());
 }

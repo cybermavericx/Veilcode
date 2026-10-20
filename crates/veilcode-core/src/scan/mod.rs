@@ -12,6 +12,7 @@ mod tests;
 use crate::error::Result;
 use crate::hex;
 use crate::profile::Profile;
+use crate::token::KnownPrefixes;
 pub(crate) use detect::gitleaks::RuleSet;
 pub use finding::{Detector, Finding, IgnoreReason, ScanReport, ScannedFile, Skipped, to_json};
 use serde::{Deserialize, Serialize};
@@ -70,15 +71,29 @@ pub(crate) struct Scanner<'p> {
     pub(crate) rules: RuleSet,
     extra: detect::custom::ExtraKeys,
     profile: &'p Profile,
+    /// Spans that are exactly a token of these prefixes are dropped (D48a).
+    known: KnownPrefixes,
 }
 
 impl<'p> Scanner<'p> {
+    /// A scanner that drops exact default-prefix tokens.
     pub(crate) fn new(profile: &'p Profile) -> Result<Scanner<'p>> {
+        Scanner::with_prefixes(profile, KnownPrefixes::default())
+    }
+
+    /// A scanner that drops exact tokens of every `known` prefix (restore, D138).
+    pub(crate) fn with_prefixes(profile: &'p Profile, known: KnownPrefixes) -> Result<Scanner<'p>> {
         Ok(Scanner {
             rules: RuleSet::load()?,
             extra: detect::custom::ExtraKeys::new(profile.extra_keys())?,
             profile,
+            known,
         })
+    }
+
+    /// The prefixes whose exact tokens this scanner drops.
+    pub(crate) fn known(&self) -> &KnownPrefixes {
+        &self.known
     }
 }
 
@@ -104,7 +119,7 @@ pub(crate) fn scan_text(
         sha256: &sha256,
         lines: &lines,
     };
-    for c in resolve::resolve(content, cands) {
+    for c in resolve::resolve(content, cands, &scanner.known) {
         let mut f = finding::build(&ctx, &c);
         f.ignored = scanner.profile.mark(&f);
         report.findings.push(f);
@@ -116,8 +131,9 @@ pub(crate) fn scan_text(
 }
 
 /// Text Mode: D1–D4 on pasted text, with no file-name gating for D2/D3.
-/// Findings are sorted by start and never overlap.
-pub(crate) fn scan_pasted(rules: &RuleSet, content: &[u8]) -> Vec<Finding> {
+/// Findings are sorted by start and never overlap; exact tokens of the
+/// `known` prefixes are dropped.
+pub(crate) fn scan_pasted(rules: &RuleSet, content: &[u8], known: &KnownPrefixes) -> Vec<Finding> {
     let sha256 = hex::encode(&Sha256::digest(content));
     let cands = detect::detect_all(rules, content);
     let lines = finding::LineIndex::new(content);
@@ -127,6 +143,6 @@ pub(crate) fn scan_pasted(rules: &RuleSet, content: &[u8]) -> Vec<Finding> {
         sha256: &sha256,
         lines: &lines,
     };
-    let found = resolve::resolve(content, cands);
+    let found = resolve::resolve(content, cands, known);
     found.iter().map(|c| finding::build(&ctx, c)).collect()
 }
