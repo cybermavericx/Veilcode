@@ -201,6 +201,17 @@ no vault, so it lists tokens of a custom prefix as findings; `mask` and
 `restore` know the vault's prefixes and leave them alone (`mask` prints how
 many findings already were placeholder tokens).
 
+The prefix of a successful mask is remembered for that folder, inside the
+encrypted vault (D141). The next `mask` of the same folder without
+`--token-prefix` uses it, and every `mask` prints the prefix it used, for
+example `placeholder prefix: Infra_Mask_ (remembered for this folder)`. Pass
+`--token-prefix VEILCODE_` to go back to the default. In the app, the field
+is filled in when you scan the folder, with the hint "remembered for this
+project" and a "Reset to default" button. The memory is kept only while the
+vault file exists: when the last session is forgotten (for example after a
+clean restore of your only session) the vault file is deleted, and the memory
+with it. Saving the vault with v0.2.0-rc3 drops the memory (tested).
+
 Older versions: the v0.2.0-rc3 CLI, tested, refuses a vault that holds a
 token with a custom prefix, with "wrong passphrase or corrupted vault" (the
 vault is not damaged). A vault with only `VEILCODE_` tokens written by this

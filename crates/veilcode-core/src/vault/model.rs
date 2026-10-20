@@ -1,5 +1,6 @@
 //! Vault plaintext model and its JSON form (SPEC §7, D5).
 
+use super::project::ProjectKey;
 use crate::error::{CoreError, Result};
 use crate::hex;
 use crate::scan::ScanOptions;
@@ -113,6 +114,8 @@ impl fmt::Debug for Entry {
 pub(crate) struct VaultData {
     pub(crate) sessions: Vec<Session>,
     pub(crate) entries: BTreeMap<Token, Entry>,
+    /// The prefix remembered per project (D141); only custom prefixes.
+    pub(crate) project_prefixes: BTreeMap<ProjectKey, TokenPrefix>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -120,6 +123,10 @@ struct Wire {
     version: u32,
     sessions: Vec<Session>,
     entries: BTreeMap<String, WireEntry>,
+    /// D141: project key → custom prefix. Written only when not empty, so a
+    /// vault without remembered prefixes keeps the pre-D141 JSON shape.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    project_prefixes: BTreeMap<String, String>,
 }
 
 /// JSON form of an entry; the hex value is wiped on drop.
@@ -142,10 +149,16 @@ impl VaultData {
             .iter()
             .map(|(t, e)| (t.as_str().to_string(), WireEntry::from(e)))
             .collect();
+        let project_prefixes = self
+            .project_prefixes
+            .iter()
+            .map(|(k, p)| (k.as_str().to_string(), p.as_str().to_string()))
+            .collect();
         let wire = Wire {
             version: VERSION,
             sessions: self.sessions.clone(),
             entries,
+            project_prefixes,
         };
         let mut buf = Zeroizing::new(Vec::with_capacity(json_capacity(&wire)));
         serde_json::to_writer(&mut *buf, &wire).map_err(|_| CoreError::Encrypt)?;
@@ -178,8 +191,21 @@ impl VaultData {
         Ok(VaultData {
             sessions: wire.sessions.clone(),
             entries,
+            project_prefixes: project_prefixes(&wire)?,
         })
     }
+}
+
+/// D141: every key is 64 lowercase hex characters and every prefix passes
+/// the D138 rule, else the generic open error.
+fn project_prefixes(wire: &Wire) -> Result<BTreeMap<ProjectKey, TokenPrefix>> {
+    let mut out = BTreeMap::new();
+    for (k, p) in &wire.project_prefixes {
+        let key = ProjectKey::parse(k).ok_or(CoreError::VaultOpen)?;
+        let prefix = TokenPrefix::parse(p).map_err(|_| CoreError::VaultOpen)?;
+        out.insert(key, prefix);
+    }
+    Ok(out)
 }
 
 impl From<&Entry> for WireEntry {
@@ -205,7 +231,8 @@ fn json_capacity(wire: &Wire) -> usize {
         .iter()
         .map(|s| s.source_label.len() * 6 + s.tokens.len() * 48 + 96)
         .sum();
-    entries + sessions + 64
+    let projects = wire.project_prefixes.len() * (64 + 16 + 8);
+    entries + sessions + projects + 64
 }
 
 #[cfg(test)]

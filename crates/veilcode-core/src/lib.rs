@@ -34,7 +34,9 @@ pub use scan::{
 pub use secret::{SecretBytes, SecretString};
 pub use text::{mask_text, restore_text};
 pub use token::{DEFAULT_PREFIX, TOKEN_PATTERN, Token, TokenPrefix};
-pub use vault::{PurgeResult, Session, SessionId, Vault, VaultStatus, default_vault_path};
+pub use vault::{
+    ProjectKey, PurgeResult, Session, SessionId, Vault, VaultStatus, default_vault_path,
+};
 pub use view::{
     ELLIPSIS, FindingView, PartKind, VIEW_CONTEXT_LINES, VIEW_MAX_BYTES, ViewLine, ViewPart,
     reveal_finding, view_finding,

@@ -4,7 +4,8 @@ use super::*;
 use crate::error::CoreError;
 use crate::test_support::*;
 use crate::token::TokenPrefix;
-use std::path::PathBuf;
+use crate::vault::ProjectKey;
+use std::path::{Path, PathBuf};
 
 struct Dirs {
     tmp: tempfile::TempDir,
@@ -474,4 +475,61 @@ fn s8c_tokens_of_the_chosen_prefix_are_not_masked_again() {
     let out = String::from_utf8(read(&d.out, ".env")).expect("utf8");
     let want = "API_KEY=Zed_Mask_API_KEY_abcdef01\nDB_PASSWORD=Zed_Mask_DB_PASSWORD_";
     assert!(out.starts_with(want), "{out}");
+}
+
+/// Masks `input` into `out` with `prefix` and the vault in `d`.
+fn mask_with(input: &Path, out: &Path, vault: &mut Vault, prefix: &str) -> Result<MaskReport> {
+    let report = scan_dir(input);
+    mask(
+        &report,
+        &Selection::All,
+        input,
+        out,
+        vault,
+        &opts_with(prefix),
+    )
+}
+
+fn reopen(d: &Dirs) -> Vault {
+    Vault::open(&d.tmp.path().join("vault.vc"), &test_pass()).expect("open")
+}
+
+#[test]
+fn m12_mask_remembers_the_prefix_per_project() {
+    let d = dirs();
+    let s = sample_tree(&d.input);
+    let other = d.tmp.path().join("other");
+    sample_tree(&other);
+    let (key, other_key) = (
+        ProjectKey::for_input(&d.input).expect("key"),
+        ProjectKey::for_input(&other).expect("key"),
+    );
+    let mut vault = test_vault(d.tmp.path());
+    mask_with(&d.input, &d.out, &mut vault, "Infra_Mask_").expect("mask");
+    let infra = TokenPrefix::parse("Infra_Mask_").expect("prefix");
+    assert_eq!(vault.remembered_prefix(&key), Some(&infra));
+    assert_eq!(reopen(&d).remembered_prefix(&key), Some(&infra), "saved");
+    assert_eq!(vault.remembered_prefix(&other_key), None);
+    let json = String::from_utf8(vault.plaintext_json().to_vec()).expect("utf8");
+    let input_text = d.input.to_string_lossy().into_owned();
+    assert!(!json.contains(&input_text), "input path in the vault");
+    // A mask that fails at the vault save (D28 lock held) changes nothing.
+    let lock = d.tmp.path().join("vault.vc.tmp");
+    std::fs::write(&lock, b"").expect("lock");
+    let failed = d.tmp.path().join("failed");
+    let err = mask_with(&d.input, &failed, &mut vault, "Zed_Mask_").err();
+    let locked = matches!(&err, Some(CoreError::PartialOutput { cause, .. })
+        if matches!(**cause, CoreError::SaveLocked));
+    assert!(locked, "{err:?}");
+    std::fs::remove_file(&lock).expect("unlock");
+    assert_eq!(vault.remembered_prefix(&key), Some(&infra));
+    assert_eq!(reopen(&d).remembered_prefix(&key), Some(&infra));
+    // Masking with the default prefix forgets it.
+    let out2 = d.tmp.path().join("out2");
+    mask_with(&d.input, &out2, &mut vault, "VEILCODE_").expect("mask");
+    assert_eq!(vault.remembered_prefix(&key), None);
+    assert_eq!(reopen(&d).remembered_prefix(&key), None);
+    let json = String::from_utf8(vault.plaintext_json().to_vec()).expect("utf8");
+    assert!(!json.contains("project_prefixes"), "pre-D141 shape");
+    assert_no_secret(&all_bytes(&out2), &s.all());
 }

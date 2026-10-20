@@ -8,7 +8,7 @@ use crate::scan::walk::{self, Class, FileEntry};
 use crate::scan::{Finding, ScanReport, Skipped};
 use crate::secret::SecretBytes;
 use crate::token::{KnownPrefixes, Token, TokenPrefix};
-use crate::vault::{DEFAULT_TTL_DAYS, Vault, ttl_secs};
+use crate::vault::{DEFAULT_TTL_DAYS, ProjectKey, Vault, ttl_secs};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -84,6 +84,7 @@ pub fn mask(
     let ignored_by_profile = count_ignored(report, &selected);
     let tree = read_input(report, input)?;
     let by_file = check_findings(&tree, &selected)?;
+    let project = ProjectKey::for_input(input)?;
     let out = OutputDir::prepare(out, input)?;
     // D69: on any later error remove our output; keep memory equal to disk.
     let before = vault.snapshot();
@@ -95,6 +96,7 @@ pub fn mask(
         tree: &tree,
         by_file: &by_file,
         label: &label,
+        project,
         opts,
         ignored_by_profile,
     };
@@ -110,6 +112,8 @@ struct Run<'a> {
     tree: &'a Input,
     by_file: &'a [Vec<&'a Finding>],
     label: &'a str,
+    /// The input's project key: its prefix is remembered on success (D141).
+    project: ProjectKey,
     opts: &'a MaskOptions,
     ignored_by_profile: usize,
 }
@@ -133,6 +137,7 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
     let tokens = session_tokens.len();
     let options = run.report.options.clone();
     let session_id = vault.add_session(run.label, session_tokens, run.opts.ttl_days, options)?;
+    vault.remember_prefix(run.project.clone(), prefix);
     vault.save()?;
     Ok(MaskReport {
         session_id,

@@ -264,6 +264,12 @@ reopen the vault to see its true state (D67, D72).
   reports no file identity. The viewer then still shows nothing unless the
   file it reached has exactly the sha256 recorded by the scan, so it can only
   ever show the content that was scanned. Nothing is written.
+- **Remembered prefix per project (D141).** The vault remembers a custom
+  prefix per project under an unsalted sha256 of the folder's canonical path,
+  so the vault holds no path text, but whoever has the passphrase can test a
+  guessed path (that person can read every secret in the vault anyway). The
+  memory lives inside the encrypted vault only and is deleted with it (D62).
+  An older version that saves the vault drops it (tested with v0.2.0-rc3).
 - **Look-alike prefixes (D138, Info 5).** A prefix such as `XVEILCODE_` is
   allowed. Its tokens contain a `VEILCODE_` shape, so a plain scan lists such
   a token as a finding and a restore with a vault that lacks that prefix

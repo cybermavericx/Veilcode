@@ -12,9 +12,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use veilcode_core::{
-    Clock, CoreError, DEFAULT_PREFIX, Finding, MaskOptions, MaskReport, Profile, RestoreReport,
-    ScanOptions, ScanReport, Scope, SecretBytes, SecretString, Selection, SessionId, TokenPrefix,
-    Vault, default_profile_path, default_vault_path,
+    Clock, CoreError, DEFAULT_PREFIX, Finding, MaskOptions, MaskReport, Profile, ProjectKey,
+    RestoreReport, ScanOptions, ScanReport, Scope, SecretBytes, SecretString, Selection, SessionId,
+    TokenPrefix, Vault, default_profile_path, default_vault_path,
 };
 
 mod viewer;
@@ -141,8 +141,10 @@ impl fmt::Display for GuiError {
 }
 
 /// Owns the unlocked vault. Wiping (or dropping) it drops the `Vault`,
-/// whose key and values are zeroized by the core types.
-pub struct KeyGuard(Vault);
+/// whose key and values are zeroized by the core types. Boxed, so the
+/// vault stays at one heap address while the guard moves between the UI
+/// and the worker (and `VaultState` stays small).
+pub struct KeyGuard(Box<Vault>);
 
 impl Drop for KeyGuard {
     fn drop(&mut self) {
@@ -161,9 +163,9 @@ enum VaultState {
 /// What a finished job produced.
 enum Done {
     Unlocked(usize),
-    Scanned(PathBuf, ScanReport),
+    Scanned(PathBuf, ScanReport, ProjectKey),
     /// A Rescan finished: its review starts over (D136).
-    Rescanned(PathBuf, ScanReport),
+    Rescanned(PathBuf, ScanReport, ProjectKey),
     Masked(MaskReport, PathBuf, Option<PathBuf>),
     Restored(RestoreReport, PathBuf),
     Notice(String),
@@ -184,6 +186,9 @@ pub struct Outcome {
 struct ScanState {
     input: PathBuf,
     report: ScanReport,
+    /// The input's project key and the prefix the vault remembers for it (D141).
+    project: ProjectKey,
+    remembered: Option<TokenPrefix>,
     /// Non-ignored findings the user unticked.
     unticked: BTreeSet<String>,
     confirmed: bool,
@@ -234,6 +239,16 @@ pub fn prefix_problem(typed: &str) -> Option<GuiError> {
     TokenPrefix::parse(typed).err().map(GuiError::Core)
 }
 
+/// D141: shown next to the prefix field when it holds the remembered prefix.
+pub const REMEMBERED_HINT: &str = "remembered for this project";
+
+/// D141: the hint for the typed prefix, given the remembered one.
+pub fn prefix_hint(remembered: Option<&TokenPrefix>, typed: &str) -> Option<&'static str> {
+    remembered
+        .filter(|p| p.as_str() == typed)
+        .map(|_| REMEMBERED_HINT)
+}
+
 /// Text Mode buffers: the only place real values may be shown (SPEC §10.4).
 #[derive(Default)]
 pub struct TextBuffers {
@@ -276,6 +291,8 @@ pub struct AppState {
     text_report: Option<RestoreView>,
     /// The open finding viewer (D137).
     viewer: Option<Viewer>,
+    /// D141: a prefix the app puts into the Mask form (a scan of another project).
+    prefix_fill: Option<String>,
     error: Option<GuiError>,
     notice: Option<String>,
 }
@@ -304,6 +321,7 @@ impl AppState {
             restore_result: None,
             text_report: None,
             viewer: None,
+            prefix_fill: None,
             error: None,
             notice: None,
         }
@@ -376,6 +394,7 @@ impl AppState {
         self.restore_result = None;
         self.text_report = None;
         self.viewer = None;
+        self.prefix_fill = None;
         self.text.wipe();
         self.screen = Screen::Unlock;
     }
@@ -454,17 +473,9 @@ impl AppState {
                     self.notice = Some(format!("{expired} expired sessions removed"));
                 }
             }
-            Done::Scanned(input, report) => self.apply_scan(input, report, false),
-            Done::Rescanned(input, report) => self.apply_scan(input, report, true),
-            Done::Masked(r, out, vault) => {
-                let vault = vault.map(|p| p.display().to_string());
-                let out = out.display().to_string();
-                self.mask_result = Some(viewmodel::mask_view(&r, out, vault));
-                if let Some(scan) = &mut self.scan {
-                    scan.confirmed = false;
-                    scan.masked = true;
-                }
-            }
+            Done::Scanned(input, report, key) => self.apply_scan(input, report, key, false),
+            Done::Rescanned(input, report, key) => self.apply_scan(input, report, key, true),
+            Done::Masked(r, out, vault) => self.apply_mask(&r, &out, vault.as_deref()),
             Done::Restored(r, out) => {
                 let out = Some(out.display().to_string());
                 self.restore_result = Some(viewmodel::restore_view(&r, out));
@@ -478,9 +489,17 @@ impl AppState {
 
     /// A finished scan; `fresh` (Rescan) ticks every finding again. Runs only
     /// when the scan succeeded, so a failed Rescan keeps the review.
-    fn apply_scan(&mut self, input: PathBuf, report: ScanReport, fresh: bool) {
+    fn apply_scan(&mut self, input: PathBuf, report: ScanReport, key: ProjectKey, fresh: bool) {
         // Finding ids of the old scan may be stale.
         self.viewer = None;
+        let remembered = self.remembered_for(&key);
+        // D141: a scan of another project puts its prefix into the form.
+        if self.scan.as_ref().is_none_or(|old| old.project != key) {
+            let fill = remembered
+                .as_ref()
+                .map_or(DEFAULT_PREFIX, TokenPrefix::as_str);
+            self.prefix_fill = Some(fill.to_string());
+        }
         let mut unticked = match self.scan.take() {
             Some(old) if old.input == input && !fresh => old.unticked,
             _ => BTreeSet::new(),
@@ -489,10 +508,45 @@ impl AppState {
         self.scan = Some(ScanState {
             input,
             report,
+            project: key,
+            remembered,
             unticked,
             confirmed: false,
             masked: false,
         });
+    }
+
+    /// A finished mask; the main vault may now remember another prefix (D141).
+    fn apply_mask(&mut self, r: &MaskReport, out: &Path, vault: Option<&Path>) {
+        let vault = vault.map(|p| p.display().to_string());
+        let out = out.display().to_string();
+        self.mask_result = Some(viewmodel::mask_view(r, out, vault));
+        let remembered = match &self.scan {
+            Some(scan) => self.remembered_for(&scan.project),
+            None => None,
+        };
+        if let Some(scan) = &mut self.scan {
+            scan.confirmed = false;
+            scan.masked = true;
+            scan.remembered = remembered;
+        }
+    }
+
+    /// The prefix the unlocked main vault remembers for `key` (D141).
+    fn remembered_for(&self, key: &ProjectKey) -> Option<TokenPrefix> {
+        let vault = self.vault_ref().ok()?;
+        vault.remembered_prefix(key).cloned()
+    }
+
+    /// D141: the prefix the main vault remembers for the scanned project.
+    pub fn remembered_prefix(&self) -> Option<&TokenPrefix> {
+        self.scan.as_ref()?.remembered.as_ref()
+    }
+
+    /// D141: once after a scan of another project, the prefix to put into
+    /// the Mask form (the remembered one, else `VEILCODE_`).
+    pub fn take_prefix_fill(&mut self) -> Option<String> {
+        self.prefix_fill.take()
     }
 
     fn set_text_output(&mut self, text: String, report: Option<&RestoreReport>) {
@@ -583,7 +637,8 @@ impl AppState {
 fn scan_job(input: PathBuf, profile: &Path) -> Result<Done, GuiError> {
     let p = Profile::load(profile)?;
     let report = veilcode_core::scan(&input, &ScanOptions::default(), &p)?;
-    Ok(Done::Scanned(input, report))
+    let key = ProjectKey::for_input(&input)?;
+    Ok(Done::Scanned(input, report, key))
 }
 
 /// The ticked findings as an explicit selection (D51, D78).
@@ -631,7 +686,7 @@ impl AppState {
             let (guard, result) = match open_or_create(&path, &pass, create) {
                 Ok(v) => {
                     let expired = v.expired_removed();
-                    (Some(KeyGuard(v)), Ok(Done::Unlocked(expired)))
+                    (Some(KeyGuard(Box::new(v))), Ok(Done::Unlocked(expired)))
                 }
                 Err(e) => (None, Err(e)),
             };
@@ -662,7 +717,7 @@ impl AppState {
         check_local(&input)?;
         self.keep_outside(&input)?;
         self.run_plain(move || match scan_job(input, &profile)? {
-            Done::Scanned(input, report) => Ok(Done::Rescanned(input, report)),
+            Done::Scanned(input, report, key) => Ok(Done::Rescanned(input, report, key)),
             other => Ok(other),
         })
     }

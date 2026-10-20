@@ -111,6 +111,8 @@ impl Forms {
             wipe_string(std::mem::take(s));
         }
         self.everywhere = None;
+        // D141: the prefix is filled again from the vault after the next scan.
+        self.token_prefix = DEFAULT_PREFIX.to_string();
         self.purge_confirm = false;
         self.restore_session = None;
     }
@@ -141,10 +143,14 @@ pub fn form_wipes() -> usize {
 
 /// After any lock (D106): drops UI copies of anything typed while
 /// unlocked, including egui's per-widget memory (text edit undo history).
+/// Also puts a scanned project's placeholder prefix into the form (D141).
 pub fn sync_lock(state: &mut AppState, forms: &mut Forms, ctx: &egui::Context) {
     if state.take_just_locked() {
         forms.wipe();
         ctx.memory_mut(|m| m.data.clear());
+    }
+    if let Some(prefix) = state.take_prefix_fill() {
+        forms.token_prefix = prefix;
     }
 }
 

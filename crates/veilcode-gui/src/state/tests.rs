@@ -1234,3 +1234,109 @@ fn g18_mask_card_counts_findings_that_already_are_tokens() {
     assert!(card.lines.iter().any(|l| l == line), "{:?}", card.lines);
     assert_eq!(read(&fx.path("masked").join("old/.env")).as_bytes(), env);
 }
+
+fn prefix_form(prefix: &str) -> MaskForm {
+    MaskForm {
+        token_prefix: prefix.to_string(),
+        ..MaskForm::default()
+    }
+}
+
+/// Confirms the review and masks into the new folder `out` with `prefix`.
+fn mask_with(s: &mut AppState, fx: &Fixture, out: &str, prefix: &str) {
+    s.confirm_review().expect("confirm");
+    done(s, |s| s.mask(fx.path(out), prefix_form(prefix)));
+}
+
+fn remembered(s: &AppState) -> Option<String> {
+    s.remembered_prefix().map(|p| p.as_str().to_string())
+}
+
+#[test]
+fn g20_prefix_is_remembered_per_project() {
+    let fx = Fixture::new();
+    let other = fx.path("other");
+    write_tree(&other, &[("readme.txt", b"no secrets here\n")]);
+    let mut s = fx.scanned();
+    assert_eq!(s.take_prefix_fill().as_deref(), Some("VEILCODE_"));
+    assert_eq!(remembered(&s), None);
+    mask_with(&mut s, &fx, "m1", "Infra_Mask_");
+    assert_eq!(remembered(&s).as_deref(), Some("Infra_Mask_"));
+    assert_eq!(
+        prefix_hint(s.remembered_prefix(), "Infra_Mask_"),
+        Some(REMEMBERED_HINT)
+    );
+    assert_eq!(prefix_hint(s.remembered_prefix(), "Zed_Mask_"), None);
+    done(&mut s, AppState::rescan);
+    assert_eq!(s.take_prefix_fill(), None, "Rescan keeps the field");
+    s.lock();
+    assert_eq!(s.take_prefix_fill(), None);
+    let pass = || SecretString::new("correct horse battery".to_string());
+    done(&mut s, |s| s.unlock(pass()));
+    done(&mut s, |s| s.scan(fx.input.clone()));
+    assert_eq!(
+        s.take_prefix_fill().as_deref(),
+        Some("Infra_Mask_"),
+        "from disk"
+    );
+    done(&mut s, |s| s.scan(other.clone()));
+    assert_eq!(s.take_prefix_fill().as_deref(), Some("VEILCODE_"));
+    assert_eq!(remembered(&s), None);
+    done(&mut s, |s| s.scan(fx.input.clone()));
+    assert_eq!(s.take_prefix_fill().as_deref(), Some("Infra_Mask_"));
+    mask_with(&mut s, &fx, "m2", "VEILCODE_");
+    assert_eq!(remembered(&s), None, "the default prefix is not remembered");
+    assert_eq!(prefix_hint(None, "VEILCODE_"), None);
+}
+
+#[test]
+fn g20_separate_vault_mask_leaves_the_main_vault_memory() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    let pass = || SecretString::new("separate vault passphrase".to_string());
+    let form = MaskForm {
+        separate_vault: Some(SeparateVault {
+            path: fx.path("project.vc"),
+            pass: pass(),
+            confirm: pass(),
+        }),
+        ..prefix_form("Infra_Mask_")
+    };
+    done(&mut s, |s| s.mask(fx.path("masked"), form));
+    assert!(fx.path("project.vc").exists());
+    assert_eq!(
+        remembered(&s),
+        None,
+        "remembered in the separate vault only"
+    );
+    let sep = Vault::open(&fx.path("project.vc"), &pass()).expect("open");
+    let key = veilcode_core::ProjectKey::for_input(&fx.input).expect("key");
+    assert_eq!(
+        sep.remembered_prefix(&key).map(|p| p.as_str()),
+        Some("Infra_Mask_")
+    );
+}
+
+#[test]
+fn g20_lock_resets_the_prefix_field_and_a_scan_fills_it() {
+    let fx = Fixture::new();
+    let mut slow = Slow::unlocked(&fx);
+    slow.run(|s| s.scan(fx.input.clone()));
+    assert_eq!(slow.forms.token_prefix, "VEILCODE_");
+    slow.forms.token_prefix = "Infra_Mask_".to_string();
+    slow.s.confirm_review().expect("confirm");
+    let form = prefix_form(&slow.forms.token_prefix);
+    slow.run(|s| s.mask(fx.path("masked"), form));
+    slow.forms.token_prefix = "Typed_".to_string();
+    slow.s.lock();
+    slow.frame();
+    assert_eq!(slow.forms.token_prefix, "VEILCODE_", "wiped on lock");
+    let pass = || SecretString::new("correct horse battery".to_string());
+    slow.run(|s| s.unlock(pass()));
+    slow.run(|s| s.scan(fx.input.clone()));
+    assert_eq!(
+        slow.forms.token_prefix, "Infra_Mask_",
+        "filled from the vault"
+    );
+}

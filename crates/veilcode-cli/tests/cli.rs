@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `.env` (D2), `wp-config.php` (D3) and `src/app.js` (D1 PAT).
 struct Sample {
@@ -506,4 +506,54 @@ fn c10_mask_reports_findings_that_already_are_tokens() {
     assert!(m.err().contains(line), "{}", m.err());
     let out = all_bytes(&masked);
     assert!(contains(&out, "API_KEY=Infra_Mask_API_KEY_abcdef01\n"));
+}
+
+/// `mask <input> --out <out>` plus `extra`; expects exit 0 and the
+/// "placeholder prefix: …" line `want` on stderr.
+fn mask_expect_prefix(ctx: &Ctx, input: &Path, out: &str, extra: &[&str], want: &str) -> Vec<u8> {
+    let (input, out) = (s(input), ctx.path(out));
+    let mut args = vec!["mask", input.as_str(), "--out"];
+    let out_s = s(&out);
+    args.push(&out_s);
+    args.extend_from_slice(extra);
+    let m = ctx.run_pass(&args);
+    assert_eq!(m.code, 0, "{}", m.err());
+    let line = format!("placeholder prefix: {want}\n");
+    assert!(m.err().contains(&line), "want {line:?} in {}", m.err());
+    all_bytes(&out)
+}
+
+#[test]
+fn c11_mask_uses_the_prefix_remembered_for_the_folder() {
+    let mut ctx = Ctx::new();
+    let sm = sample(&mut ctx);
+    let other = ctx.path("other");
+    write_tree(&other, &[("readme.txt", b"no secrets here\n")]);
+    let flag = ["--token-prefix", "Infra_Mask_"];
+    let out = mask_expect_prefix(
+        &ctx,
+        &sm.input,
+        "m1",
+        &flag,
+        "Infra_Mask_ (from --token-prefix)",
+    );
+    assert!(contains(&out, "Infra_Mask_DB_PASSWORD_"));
+    let want = "Infra_Mask_ (remembered for this folder)";
+    let out = mask_expect_prefix(&ctx, &sm.input, "m2", &[], want);
+    assert!(contains(&out, "Infra_Mask_DB_PASSWORD_") && !contains(&out, "VEILCODE_"));
+    mask_expect_prefix(&ctx, &other, "m3", &[], "VEILCODE_ (default)");
+    let reset = ["--token-prefix", "VEILCODE_"];
+    let out = mask_expect_prefix(
+        &ctx,
+        &sm.input,
+        "m4",
+        &reset,
+        "VEILCODE_ (from --token-prefix)",
+    );
+    assert!(contains(&out, "VEILCODE_DB_PASSWORD_") && !contains(&out, "Infra_Mask_"));
+    let out = mask_expect_prefix(&ctx, &sm.input, "m5", &[], "VEILCODE_ (default)");
+    assert!(contains(&out, "VEILCODE_DB_PASSWORD_"));
+    let help = ctx.run(&["mask", "--help"], "");
+    assert_eq!(help.code, 0);
+    assert!(help.out().contains("remembered"), "{}", help.out());
 }

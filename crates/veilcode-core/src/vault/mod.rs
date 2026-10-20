@@ -3,9 +3,11 @@
 mod crypto;
 mod format;
 mod model;
+mod project;
 mod session;
 
 pub use model::{Session, SessionId};
+pub use project::ProjectKey;
 pub(crate) use session::{DEFAULT_TTL_DAYS, ttl_secs};
 pub use session::{PurgeResult, VaultStatus};
 

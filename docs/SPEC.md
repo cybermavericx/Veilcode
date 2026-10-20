@@ -1,7 +1,7 @@
 # Veilcode — Specification (v1.4, 2026-10-19)
 
 Repo: https://github.com/cybermavericx/Veilcode · License: MIT OR Apache-2.0
-Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md. v1.3 (maintainer-requested) adds the detection profile, custom keys, false-positive handling and review-before-mask (§5.1; D74–D80), and brings the §5 text in line with D41 and D48–D50. v1.4 (maintainer-approved, from the rc3 Windows feedback) adds the custom placeholder prefix (§4, §6.1, §6.2, §7; D138) and the read-only finding viewer with Reveal (§10.4; D137).
+Changes to this file need the maintainer's approval. v1.1 folds in DECISIONS.md D0–D23. In particular, D22 replaced Tauri with a native Rust GUI. v1.2 (maintainer-approved) adds the **secret lifecycle / retention** design, D60–D66, plus D57r and D58. Implementation-level decisions D24–D59 are binding through DECISIONS.md. v1.3 (maintainer-requested) adds the detection profile, custom keys, false-positive handling and review-before-mask (§5.1; D74–D80), and brings the §5 text in line with D41 and D48–D50. v1.4 (maintainer-approved, from the rc3 Windows feedback) adds the custom placeholder prefix (§4, §6.1, §6.2, §7; D138), the prefix remembered per project (§4, §6.1, §7; D141, maintainer-requested 2026-10-20) and the read-only finding viewer with Reveal (§10.4; D137).
 
 ## 1. Problem & positioning
 Developers paste server code into AI assistants, including `.env` files and config secrets. Veilcode masks those secrets with unique placeholders, stores the real values in a local encrypted vault, and restores them after the AI work is done, even if the AI moved, renamed, or edited the code.
@@ -43,6 +43,7 @@ scripts/check-offline.sh, scripts/check-test-ids.sh, scripts/net-audit.sh
 - The same secret value **with the same prefix** always maps to the same token (dedupe within the vault). The NAME comes from the first occurrence. The same value masked with a different prefix gets its own token (D138).
 - If a generated token already exists in the vault, or already appears in any input file, regenerate it.
 - Text Mode (§6.3) always uses the default prefix.
+- **Remembered per project (D141):** a successful folder mask remembers its prefix for the input folder in the vault (§7); `VEILCODE_` removes the memory. The next mask of the same folder starts from it: the GUI pre-fills the field (hint "remembered for this project", "Reset to default"), and CLI `mask` without `--token-prefix` uses it, else `VEILCODE_`, and prints which prefix it used and why. An explicit `--token-prefix` updates the memory.
 
 ## 5. Detection (scanner)
 **Input walk** (`walkdir`, never follow symlinks):
@@ -136,7 +137,7 @@ Inputs: input dir, output dir, ScanReport plus a selection of finding ids (defau
    - Binary and oversized files are **not copied** unless `include_unscanned=true`.
    - **Symlinks are never copied.**
    - Excluded paths are never copied.
-6. Save the vault, then return a MaskReport: session id, counts (including `already_tokens`, selected findings that already were tokens, D138), files not copied. The report contains no secret values.
+6. Remember the chosen prefix for the input folder (§4, D141), save the vault, then return a MaskReport: session id, counts (including `already_tokens`, selected findings that already were tokens, D138), files not copied. The report contains no secret values.
 
 ### 6.2 Restore (`AI-modified masked folder → new folder`)
 Inputs: input dir, output dir, vault, optional session id (default: newest session), `keep` (default false).
@@ -178,6 +179,7 @@ Every write path must be checked: the joined output path must stay under the out
   - The salt is kept for the vault's lifetime.
 - **AEAD:** XChaCha20-Poly1305, with a fresh random nonce on every save. AAD = all header bytes before the ciphertext.
 - **Plaintext:** JSON `{ "version":1, "sessions":[...], "entries":{ token: {value_hex,name,rule_id[,prefix]} } }`. `value_hex` is the lowercase hex of the raw secret bytes. `prefix` is written only when it is not `VEILCODE_`, and an absent `prefix` reads as `VEILCODE_`, so a vault holding only default-prefix entries has the same JSON shape as before v1.4. On open, a stored prefix that breaks the §4 rule, or an entry key that is not a token of its own prefix, gives the generic error (D138).
+  - `project_prefixes` (D141): an optional top-level object `{ key: prefix }`, omitted when empty. `key` is the lowercase hex sha256 of `veilcode project prefix v1\0` followed by the input folder's canonical path bytes (Unix: OS bytes; Windows: UTF-16LE), so no path text is stored; an entry is written only for a custom prefix (`VEILCODE_` removes the key). A key that is not 64 lowercase hex characters or a prefix that breaks the §4 rule gives the generic error. It is cleared with the file when D62 removes the vault.
 - **Session record** in the plaintext: `{ id, created, expires_at, source_label, scan_options, tokens }`. `expires_at` is validated on deserialize (`created < expires_at <= created + 365 days`), otherwise the generic error.
 - **Open (D61):** after a successful decrypt, sessions with `expires_at <= now` (from the core `Clock`) are purged, along with entries no remaining session uses. If any were purged, the vault is saved immediately, or removed (D62). The open result exposes `expired_removed` (a count only).
 - **Save:** write `vault.vc.tmp`, fsync, rename over `vault.vc` (D28 lock, `0600` on Unix).

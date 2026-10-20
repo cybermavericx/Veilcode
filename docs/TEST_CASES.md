@@ -137,6 +137,13 @@ Type: auto
 - Open fails with the generic error when a stored prefix breaks the rule, or when an entry key is not a whole token of its own prefix.
 - `get_or_create_token` dedupes per (value, prefix): the same value with the same prefix returns the same token; with another prefix it returns a new token with that prefix.
 
+### T11 — project prefix memory in the vault (D141, added in P8)
+Type: auto
+- `ProjectKey::for_input` gives the same key for two spellings of one folder (`dir`, `dir/sub/..`) and another key for another folder; the key is 64 lowercase hex characters, its Debug holds no part of the path, and a missing folder is an `Io` error.
+- A vault that remembers `Infra_Mask_` for a key saves and opens with it; the plaintext JSON has `"project_prefixes":{"<key>":"Infra_Mask_"}` and not the folder name. Remembering `VEILCODE_` removes the key, and the JSON then has no `project_prefixes` member (the pre-D141 shape).
+- Open fails with the generic error when a key is not 64 lowercase hex characters (uppercase, 62 characters, a folder name) or a prefix breaks the D138 rule (`Infra_Mask`, `VEILCODE_X_`, a number); the pre-D141 shape opens with no remembered prefix.
+- Deleting the last session (D62, the file is removed) and purge both clear the memory, so memory equals disk.
+
 ---
 
 ## P2 — Scanner
@@ -279,6 +286,9 @@ Each `rel_path` in `../x`, `a/../../x`, `/etc/x`, `C:\x`, `\\srv\x` and `a//b` i
 ### M11 — output dir must be new and private (D68)
 Type: auto
 An existing empty output dir is refused for both mask and restore, and nothing is written. A non-existent output dir with missing parents is created. On Unix: the created output root has mode `0700`, and a parent with mode `0777` without the sticky bit is refused, while `/tmp`-style `1777` is accepted.
+### M12 — mask remembers the prefix per project (D141, added in P8)
+Type: auto
+Mask a folder with `Infra_Mask_`: the vault remembers `Infra_Mask_` for that folder's key, in memory and after a reopen from disk; another folder has none; the plaintext JSON does not contain the input path. A mask with `Zed_Mask_` that fails at the vault save (the D28 lock is held) leaves `Infra_Mask_` remembered, in memory and on disk. A mask with `VEILCODE_` removes it (memory and disk) and the JSON has no `project_prefixes` member. The masked output passes `assert_no_secret`.
 ### R1 — round trip
 Type: auto
 Mask, then restore. The restored tree equals the input tree, excluding `.git` and not-copied files.
@@ -521,6 +531,10 @@ Every stdout and stderr passes `assert_no_secret`.
 Type: auto
 Through the binary: `mask --token-prefix Infra_Mask_` writes tokens with that prefix, and `restore` gives back the input byte for byte. An invalid `--token-prefix` (`1bad_`, `NoUnderscore`, 17 characters) exits 2 with the rule in the message, and creates no vault and no output folder (it is refused before the passphrase is read). `mask --help` lists `--token-prefix`. A `.env` holding a token of the chosen prefix plus a password: the output says "masked 1 secrets" and "1 findings already were placeholder tokens (not masked again)", and the token is kept. Every stdout and stderr passes `assert_no_secret`.
 
+### C11 — `mask` uses the prefix remembered for the folder (D141, added in P8)
+Type: auto
+Through the binary, with one vault: `mask` with `--token-prefix Infra_Mask_` prints "placeholder prefix: Infra_Mask_ (from --token-prefix)"; a second `mask` of the same folder without the flag prints "placeholder prefix: Infra_Mask_ (remembered for this folder)" and writes `Infra_Mask_` tokens and no `VEILCODE_` token; a `mask` of another folder prints "placeholder prefix: VEILCODE_ (default)"; `--token-prefix VEILCODE_` prints "(from --token-prefix)" and writes `VEILCODE_` tokens; the next `mask` without the flag prints "placeholder prefix: VEILCODE_ (default)". `mask --help` mentions the remembered prefix. Every stdout and stderr passes `assert_no_secret`.
+
 ## P5 — CLI release
 ### REL1 — release artifacts
 Type: manual
@@ -659,6 +673,13 @@ Type: auto
 - An invalid prefix makes the form's problem list return the rule, and `mask()` refuses it before any job.
 - A valid custom prefix reaches core: the masked output holds tokens with that prefix and no `VEILCODE_` token.
 - A file holding a token of the chosen prefix: the mask view has `already_tokens` 1, the card shows "Already placeholder tokens (not masked again): 1", and the file is copied unchanged.
+### G20 — placeholder prefix remembered per project (D141, added in P8)
+Type: auto
+App-state tests with temp dirs. Pass when:
+- the first scan after unlock offers the fill `VEILCODE_` once and no remembered prefix; after a mask with `Infra_Mask_` the remembered prefix is `Infra_Mask_`, and `prefix_hint` returns "remembered for this project" for `Infra_Mask_` and nothing for another text;
+- a Rescan offers no fill; after lock and unlock (vault read from disk) a scan of the same folder offers `Infra_Mask_`; a scan of another folder offers `VEILCODE_` with no remembered prefix; scanning the first folder again offers `Infra_Mask_`; a mask with `VEILCODE_` leaves no remembered prefix;
+- a mask into a separate vault (D64) with `Infra_Mask_` leaves the main vault without a remembered prefix, and the separate vault remembers `Infra_Mask_`;
+- with the app forms (`sync_lock`): a scan fills the field, a typed prefix is reset to `VEILCODE_` by lock, and after unlock a scan of the masked folder fills `Infra_Mask_`.
 ### G19 — manual QA of the P8 features (D135–D138)
 Type: manual
 On Windows 11 with the release build, light and dark theme:
@@ -666,6 +687,7 @@ On Windows 11 with the release build, light and dark theme:
 - Rescan picks up a file edited in Explorer, and the hint is shown;
 - double-click and "View" open the viewer; the value is masked until Reveal; long minified lines are cut; closing and re-opening hides the value; Lock now closes the viewer; no external program opens;
 - a custom prefix such as `Infra_Mask_` masks and restores, and an invalid prefix disables "Start mask" with the message.
+- D141: after a mask with `Infra_Mask_` while another session keeps the vault, Lock, unlock and scan the same folder: the field shows `Infra_Mask_` with "remembered for this project"; "Reset to default" sets `VEILCODE_`; another folder shows `VEILCODE_`.
 ### G6 — GUI network audit
 Type: command
 `bash scripts/net-audit.sh` in the Linux CI job runs `veilcode-gui` under `xvfb-run` for 10 s with no `AF_INET`, `AF_INET6`, `AF_PACKET` or `AF_NETLINK` socket. Paste the output in the PR.

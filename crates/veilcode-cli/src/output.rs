@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use veilcode_core::{
     Finding, IgnoreReason, KeptReason, MaskReport, Profile, RestoreReport, ScanReport, Session,
-    VaultStatus,
+    TokenPrefix, VaultStatus,
 };
 
 /// Writes a JSON report file (created or replaced).
@@ -101,6 +101,11 @@ pub fn scan(r: &ScanReport) {
             r.warnings.len()
         );
     }
+}
+
+/// D141: the placeholder prefix a mask uses and where it came from.
+pub fn prefix_used(prefix: &TokenPrefix, source: &str) {
+    eprintln!("placeholder prefix: {} ({source})", prefix.as_str());
 }
 
 pub fn mask(r: &MaskReport, ttl_days: u32) {

@@ -84,6 +84,7 @@ crates/veilcode-core/src/
 │   │                 #   #[cfg(test)] KDF call counter (V9), zeroize counter hook (G3)
 │   └── model.rs      # VaultData { version, sessions, entries: BTreeMap<Token, Entry{value_hex,name,rule_id,prefix}> }
 │                     #   prefix written only when not VEILCODE_; absent reads as VEILCODE_ (D138)
+│                     #   project_prefixes: BTreeMap<ProjectKey, TokenPrefix>, omitted when empty (D141)
 │                     #   Session { id, created, expires_at (validated, D61), source_label, scan_options (D57r), tokens }
 ├── scan/
 │   ├── mod.rs        # pub fn scan(input, &ScanOptions, &Profile) → Result<ScanReport>
@@ -100,8 +101,10 @@ crates/veilcode-core/src/
 │       ├── url.rs    # D4
 │       └── custom.rs # D5 custom-key assignment, only for profile extra_keys (D77)
 ├── profile.rs        # Profile { extra_keys, ignored_keys, ignored[] }: load (D79 safety) / save (atomic) / edit API (D80); normalise_key (D76); never read from input (D75)
-├── mask.rs           # pub fn mask(&ScanReport, selection, input, out, &mut Vault, opts) → MaskReport (default selection excludes ignored, D78)
+├── mask.rs           # pub fn mask(&ScanReport, selection, input, out, &mut Vault, opts) → MaskReport (default selection excludes ignored, D78); remembers the prefix for the input (D141)
 ├── restore.rs        # pub fn restore(input, out, &mut Vault, session, keep) → RestoreReport; forget step last (D60)
+├── vault/project.rs  # ProjectKey::for_input(path) = sha256(domain + canonical path), Vault::remembered_prefix(&key);
+│                     #   pub(crate) remember_prefix (mask only; VEILCODE_ removes) (D141)
 ├── vault/session.rs  # retention (child of vault, so it can reach private fields): forget(session), purge_expired(now), delete, status, purge; empty vault → file removed (D60–D63)
 ├── clock.rs          # trait Clock { now_unix() }; SystemClock; ManualClock is #[cfg(test)] and open_with_clock is pub(crate) (D70). Used by expiry (D61) and GUI auto-lock
 ├── text.rs           # mask_text / restore_text (GUI Text Mode)
@@ -163,7 +166,7 @@ The exact signatures are settled in P1–P3 tests. Changing this surface after P
 ```
 crates/veilcode-cli/
 ├── src/main.rs        # parse → dispatch → map CoreError to exit 2 + message (anyhow context, no values)
-├── src/args.rs        # clap derive: scan | mask (--ttl-days) | restore (--keep) | session {list,delete} | vault {status,purge [--yes]} | profile {list,add-key,remove-key,ignore-key,unignore-key,ignore,unignore}; global flags incl. --profile
+├── src/args.rs        # clap derive: scan | mask (--ttl-days, --token-prefix: else the remembered prefix, D141) | restore (--keep) | session {list,delete} | vault {status,purge [--yes]} | profile {list,add-key,remove-key,ignore-key,unignore-key,ignore,unignore}; global flags incl. --profile
 ├── src/passphrase.rs  # rpassword prompt (twice on create) or one stdin line
 ├── src/output.rs      # human summary to stderr, JSON report to --report/--json files
 └── tests/
