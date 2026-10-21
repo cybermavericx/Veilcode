@@ -117,7 +117,7 @@ Branch `development/phase-8-gui-feedback`. Decisions D135–D139, D141; SPEC v1.
 - [x] D137: read-only in-app finding viewer (core `view_finding`, masked until Reveal, 2 MiB cap, long-line cuts, zeroizing buffers wiped on close and lock). No external program is ever launched.
 - [x] D138: custom placeholder prefix (Mask screen field, `mask --token-prefix`), stored per vault entry; restore finds tokens of every prefix in the vault; pre-v1.4 vaults restore unchanged.
 - [x] D139: rejected, declined and open items recorded (no code).
-- [x] D141: placeholder prefix remembered per project inside the vault (hashed key), CLI `mask` uses it without `--token-prefix` and prints the prefix used, GUI pre-fill, hint and "Reset to default". D62 interaction PROPOSED.
+- [x] D141: placeholder prefix remembered per project inside the vault (hashed key), CLI `mask` uses it without `--token-prefix` and prints the prefix used, GUI pre-fill, hint and "Reset to default". D62 interaction decided: the maintainer chose option (A) on 2026-10-20 (DECISIONS D141).
 
 Tests: T9, T10, T11, S8c, M12, R14–R17, R15b, VW1–VW3, VW3b, C10, C11, G15–G18, G15b, G16b, G20 (auto); G19 (manual, Windows).
 Fix round (2026-10-19): sec H1, L1–L4 and QA G1–G6 (DECISIONS D136–D138).
