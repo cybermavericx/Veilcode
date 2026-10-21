@@ -103,9 +103,11 @@ The signer check proves **which workflow file** built the file, not that the
 workflow's content was reviewed. Also check that the release tag points to a
 commit on the `main` branch of the repository.
 
-Release binaries are **not code signed** yet. On Windows, SmartScreen may warn
-when you start `veilcode.exe`; the checksum and attestation are how you check
-the file instead.
+Release binaries are **not code signed** yet (D143). On Windows, SmartScreen may
+warn when you start `veilcode.exe` or the `.msi` ("Windows protected your PC",
+"Publisher: Unknown publisher"); the checksum and attestation are how you check
+the file instead. Choose **More info**, then **Run anyway**, only after both
+checks above pass.
 
 ---
 
