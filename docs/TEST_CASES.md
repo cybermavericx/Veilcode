@@ -685,7 +685,8 @@ Type: auto
 Headless egui (`Context::run` with an 800×600 screen, a `CentralPanel`): the clickable row used for Review findings, holding a checkbox, a label and a button, is less than twice `spacing.interact_size.y` high, while the panel below it still has more than 300 px free; the row's response senses clicks.
 ### G22 — folder pickers start in a user folder (D144, rc4 feedback)
 Type: auto
-- `folder_start` returns the typed folder when it exists, its nearest existing ancestor when it does not, and the given home folder when the field is empty, relative or a network or device path (refused as text by `check_local`, D130, before any filesystem call); it returns nothing when there is no home folder.
+- `folder_start` returns the typed folder when it exists, its nearest existing ancestor when it does not (the parent folder for a typed file; `/` for `/` on Unix), and the given home folder when the field is empty or relative; it returns nothing when there is no home folder.
+- For `\\server\share\dir`, `//host/share`, `\\?\UNC\…`, `\\.\…`, `\??\…` and `\\?\GLOBALROOT\…` it returns the home folder and calls the injected folder check zero times (refused as text by `check_local`, D130).
 - The dialogs `open_dialog` returns for the Scan input, Restore input, Mask output and Restore output have `initial_directory` set to the start folder passed in (a temp dir).
 ### G23 — identity text: version, licence, copyright (D144, rc4 feedback)
 Type: auto

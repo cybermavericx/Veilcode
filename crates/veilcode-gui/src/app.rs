@@ -35,6 +35,14 @@ impl Target {
     fn picks_existing_dir(self) -> bool {
         matches!(self, Target::ScanInput | Target::RestoreIn)
     }
+
+    /// The folder pickers, which start in `folder_start` (D144).
+    fn is_folder(self) -> bool {
+        matches!(
+            self,
+            Target::ScanInput | Target::RestoreIn | Target::MaskOut | Target::RestoreOut
+        )
+    }
 }
 
 /// Text typed into the screens (UI-only; passphrases are moved into
@@ -285,9 +293,19 @@ pub fn accept_pick(state: &mut AppState, forms: &mut Forms, t: Target, path: &Pa
 /// (refused as text first, D130, so no filesystem call reaches it), falls
 /// back to `home`.
 fn folder_start(typed: &str, home: Option<PathBuf>) -> Option<PathBuf> {
+    folder_start_with(typed, home, Path::is_dir)
+}
+
+/// `folder_start` with the folder check passed in, so tests can count the
+/// filesystem calls.
+fn folder_start_with(
+    typed: &str,
+    home: Option<PathBuf>,
+    mut is_dir: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     typed_path(typed)
         .filter(|p| p.is_absolute() && check_local(p).is_ok())
-        .and_then(|p| existing_ancestor(&p))
+        .and_then(|p| p.ancestors().find(|a| is_dir(a)).map(Path::to_path_buf))
         .or(home)
 }
 
@@ -407,7 +425,11 @@ impl VeilApp {
     fn file_picker(&mut self, ctx: &egui::Context) {
         if let Some(t) = self.forms.browse.take() {
             self.target = Some(t);
-            let start = folder_start(self.forms.field(t), user_home_dir());
+            // Only the folder pickers use it: no filesystem call for the others.
+            let start = t
+                .is_folder()
+                .then(|| folder_start(self.forms.field(t), user_home_dir()))
+                .flatten();
             self.dialog = open_dialog(t, self.forms.create, start);
         }
         let dialog = &mut self.dialog;
@@ -542,8 +564,34 @@ mod tests {
         assert_eq!(start(""), Some(home.clone()));
         assert_eq!(start("  "), Some(home.clone()));
         assert_eq!(start("relative/dir"), Some(home.clone()));
-        assert_eq!(start(r"\\server\share\dir"), Some(home.clone()));
-        assert_eq!(start("//host/share"), Some(home.clone()));
+        let file = typed.join("app.js");
+        std::fs::write(&file, b"x").expect("write");
+        assert_eq!(start(&file.display().to_string()), Some(typed.clone()));
+        #[cfg(unix)]
+        assert_eq!(start("/"), Some(PathBuf::from("/")));
+    }
+
+    /// D130: network and device paths are refused as text, so the folder
+    /// check is never called for them.
+    #[test]
+    fn g22_network_and_device_paths_make_no_filesystem_call() {
+        let home = PathBuf::from("home");
+        for typed in [
+            r"\\server\share\dir",
+            "//host/share",
+            r"\\?\UNC\server\share",
+            r"\\.\pipe\x",
+            r"\??\C:\x",
+            r"\\?\GLOBALROOT\Device",
+        ] {
+            let mut calls = 0;
+            let start = folder_start_with(typed, Some(home.clone()), |_| {
+                calls += 1;
+                true
+            });
+            assert_eq!(start, Some(home.clone()), "{typed}");
+            assert_eq!(calls, 0, "{typed}");
+        }
         assert_eq!(folder_start("", None), None);
     }
 
