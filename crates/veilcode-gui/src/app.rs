@@ -6,6 +6,7 @@ use crate::state::{
     existing_ancestor, suggested_vault_path, wipe_string,
 };
 use crate::theme;
+use crate::viewmodel;
 use crate::views::{self, chrome};
 use crate::worker::ThreadRunner;
 use eframe::egui;
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use veilcode_core::{
     DEFAULT_PREFIX, MaskOptions, SystemClock, default_profile_path, default_vault_path,
+    user_home_dir,
 };
 
 /// Which form field a file-picker result goes to.
@@ -205,12 +207,14 @@ fn tab_label(s: Screen) -> &'static str {
 
 /// D126: a picker for `t`, already open. `create`: the Unlock screen is in
 /// Create mode. No dialog offers to overwrite a file.
-fn open_dialog(t: Target, create: bool) -> FileDialog {
+fn open_dialog(t: Target, create: bool, start: Option<PathBuf>) -> FileDialog {
     let base = FileDialog::new()
         .show_new_folder_button(false)
         .allow_file_overwrite(false);
     let mut d = match t {
-        Target::ScanInput | Target::RestoreIn | Target::MaskOut | Target::RestoreOut => base,
+        Target::ScanInput | Target::RestoreIn | Target::MaskOut | Target::RestoreOut => {
+            start_in(base, start)
+        }
         Target::VaultFile if !create => in_dir(base, default_vault_path())
             .add_file_filter_extensions(VAULT_FILES, vec!["vc"])
             .default_file_filter(VAULT_FILES),
@@ -274,6 +278,26 @@ pub fn accept_pick(state: &mut AppState, forms: &mut Forms, t: Target, path: &Pa
         }
     }
     *forms.field(t) = path.display().to_string();
+}
+
+/// Where a folder picker starts (D144): the nearest existing folder of the
+/// typed path, else `home`. A relative path, or a network or device path
+/// (refused as text first, D130, so no filesystem call reaches it), falls
+/// back to `home`.
+fn folder_start(typed: &str, home: Option<PathBuf>) -> Option<PathBuf> {
+    typed_path(typed)
+        .filter(|p| p.is_absolute() && check_local(p).is_ok())
+        .and_then(|p| existing_ancestor(&p))
+        .or(home)
+}
+
+/// Opens in `start` (D144): not the process's current folder, which is the
+/// install folder when Veilcode is started from the Start menu.
+fn start_in(d: FileDialog, start: Option<PathBuf>) -> FileDialog {
+    match start {
+        Some(dir) => d.initial_directory(dir),
+        None => d,
+    }
 }
 
 /// Opens in the nearest existing folder of `default`'s folder.
@@ -374,13 +398,17 @@ impl VeilApp {
             if let Some(n) = self.state.notice() {
                 ui.label(n);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(viewmodel::status_line());
+            });
         });
     }
 
     fn file_picker(&mut self, ctx: &egui::Context) {
         if let Some(t) = self.forms.browse.take() {
             self.target = Some(t);
-            self.dialog = open_dialog(t, self.forms.create);
+            let start = folder_start(self.forms.field(t), user_home_dir());
+            self.dialog = open_dialog(t, self.forms.create, start);
         }
         let dialog = &mut self.dialog;
         theme::with_dialog_style(ctx, |ctx| {
@@ -472,7 +500,7 @@ mod tests {
         let open_vault = (DialogMode::PickFile, true);
         assert_eq!(picker_settings(Target::VaultFile, false), open_vault);
         assert_eq!(picker_settings(Target::VaultFile, true), save);
-        let d = open_dialog(Target::ScanInput, false);
+        let d = open_dialog(Target::ScanInput, false, None);
         assert_eq!(d.mode(), DialogMode::PickDirectory);
     }
 
@@ -483,20 +511,54 @@ mod tests {
     fn g15b_real_input_dialogs_are_folder_pickers() {
         for t in [Target::ScanInput, Target::RestoreIn] {
             assert_eq!(
-                open_dialog(t, false).mode(),
+                open_dialog(t, false, None).mode(),
                 DialogMode::PickDirectory,
                 "{t:?}"
             );
             assert_eq!(picker_settings(t, false), (DialogMode::PickDirectory, true));
         }
         assert_eq!(
-            open_dialog(Target::MaskOut, false).mode(),
+            open_dialog(Target::MaskOut, false, None).mode(),
             DialogMode::SaveFile
         );
         assert_eq!(
-            open_dialog(Target::VaultFile, false).mode(),
+            open_dialog(Target::VaultFile, false, None).mode(),
             DialogMode::PickFile
         );
+    }
+
+    #[test]
+    fn g22_folder_start_prefers_the_typed_folder_then_home() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let home = tmp.path().join("home");
+        let typed = tmp.path().join("work");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&typed).expect("work");
+        let start = |t: &str| folder_start(t, Some(home.clone()));
+        let s = typed.display().to_string();
+        assert_eq!(start(&s), Some(typed.clone()));
+        let missing = typed.join("not-yet").join("out");
+        assert_eq!(start(&missing.display().to_string()), Some(typed.clone()));
+        assert_eq!(start(""), Some(home.clone()));
+        assert_eq!(start("  "), Some(home.clone()));
+        assert_eq!(start("relative/dir"), Some(home.clone()));
+        assert_eq!(start(r"\\server\share\dir"), Some(home.clone()));
+        assert_eq!(start("//host/share"), Some(home.clone()));
+        assert_eq!(folder_start("", None), None);
+    }
+
+    #[test]
+    fn g22_folder_dialogs_open_in_the_start_folder() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        for t in [
+            Target::ScanInput,
+            Target::RestoreIn,
+            Target::MaskOut,
+            Target::RestoreOut,
+        ] {
+            let mut d = open_dialog(t, false, Some(tmp.path().to_path_buf()));
+            assert_eq!(d.config_mut().initial_directory, tmp.path(), "{t:?}");
+        }
     }
 
     #[test]
