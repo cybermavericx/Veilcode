@@ -26,12 +26,12 @@ Do not read other docs (ACTION_PLAN.md is for the maintainer) unless the phase a
 11. **Never send the maintainer's personal data to external services.** When calling an API (for example crates.io, which asks clients to identify themselves), use the User-Agent `veilcode-ci (+https://github.com/cybermavericx/Veilcode)`, never an email address or name.
 12. **No untrue, unverified or guessed statements** in code comments, docs, decisions, reports or PR text. State an observation as exactly what it is (what was run, where, what it showed) and never generalise it into a claim about all cases without reading the relevant source or docs. Use "enforced" only for what a check fails on, "tested" for what a run exercised, and "unverified" for everything else (D107).
 
-## Dev environment (D1): build in WSL Kali, commit from Windows
-Windows Smart App Control on this PC blocks unsigned compiled binaries, so **all cargo, bash scripts and tests run inside WSL Kali**. The repo stays on the Windows drive.
-- Run commands like this:
-  `wsl -d kali-linux -e bash -lc 'cd /mnt/c/Users/TWIT02_LocalUser/Kali_Projects/Veilcode && . ~/.cargo/env && export CARGO_TARGET_DIR=/root/.cache/veilcode-target && <command>'`
-- `CARGO_TARGET_DIR` keeps build output on the Linux filesystem, which is much faster than `/mnt/c`. Never commit `target/`.
-- **git runs from Windows** (Git Bash, inside the repo), where the maintainer's repo-local identity is set. Never run `git commit` inside WSL, and never change git config.
+## Dev environment (D1, D142): build and commit in WSL Kali
+Windows Smart App Control on this PC blocks unsigned compiled binaries, so **all cargo, bash scripts and tests run inside WSL Kali**. The repo lives on the WSL Linux filesystem at `~/Projects/development/Veilcode`.
+- Run commands like this, with the user-local Rust toolchain:
+  `cd ~/Projects/development/Veilcode && . ~/.cargo/env && <command>`
+- Build output goes to the default `target/`, which is already on the Linux filesystem. Never commit `target/`.
+- **git runs in WSL**, inside the repo, using the WSL user's existing git identity. Never change git config.
 - Native Windows `.exe` builds and tests happen only in GitHub CI (windows-latest).
 
 ## Workflow per phase
