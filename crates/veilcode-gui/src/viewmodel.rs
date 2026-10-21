@@ -230,6 +230,43 @@ pub fn duration(secs: u64) -> String {
 pub const UNLOCK_HINT: &str =
     "Create or open a vault first. The other tabs become available after that.";
 
+/// Labels of the vault password fields (D144).
+pub const PASS_LABEL: &str = "Vault password:";
+pub const CONFIRM_LABEL: &str = "Repeat vault password:";
+pub const SEPARATE_PASS_LABEL: &str = "Its vault password:";
+
+/// The line under the profile field (D144).
+pub const PROFILE_HINT: &str = "The profile tunes detection: extra key names to find and findings to ignore. \
+     It is a plain text file that holds key names and file paths, never secret values.";
+
+/// The header byline after the tagline (D144).
+pub const BYLINE: &str = "by Cybermavericx";
+
+/// The licence, as `Cargo.toml` states it.
+const LICENSE: &str = env!("CARGO_PKG_LICENSE");
+
+/// The right side of the status bar (D144).
+pub fn status_line() -> String {
+    format!(
+        "Veilcode {} · Open source ({LICENSE})",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// The About section of the Help screen (D144). The copyright line is the
+/// one in `LICENSE-MIT`; no links (D127).
+pub fn about_lines() -> Vec<String> {
+    vec![
+        format!("Veilcode {}", env!("CARGO_PKG_VERSION")),
+        "Open source: licensed under either of the Apache License, Version 2.0 \
+         or the MIT license, at your option."
+            .to_string(),
+        "Copyright (c) 2026 Muhammed Noufal (Cybermavericx)".to_string(),
+        "Third-party licences are listed in THIRD_PARTY_NOTICES, installed with Veilcode."
+            .to_string(),
+    ]
+}
+
 /// The "How Veilcode works" guide and the Help screen (D127). Fixed text
 /// and default file locations only: no values and no links.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,7 +285,7 @@ pub fn guide(vault: Option<&std::path::Path>, profile: Option<&std::path::Path>)
     };
     Guide {
         steps: [
-            "Create or open a vault. It holds the real values, encrypted with a key derived from your passphrase.",
+            "Create or open a vault. It holds the real values, encrypted with a key derived from your vault password.",
             "Scan a project folder.",
             "Review what will be masked, and untick false positives.",
             "Mask into a new folder, then give that folder to the AI.",

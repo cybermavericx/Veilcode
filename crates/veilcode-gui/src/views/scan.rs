@@ -3,7 +3,7 @@
 use super::{chrome, finding_text, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::AppState;
-use crate::viewmodel::FindingRow;
+use crate::viewmodel::{self, FindingRow};
 use eframe::egui;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
@@ -73,6 +73,7 @@ pub fn profile_row(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         &mut forms.browse,
         Target::ProfileFile,
     );
+    ui.weak(viewmodel::PROFILE_HINT);
     let wanted = typed_path(&forms.profile_path);
     if !state.is_busy() && wanted.as_deref() != state.profile_path() {
         let r = state.set_profile_path(wanted);

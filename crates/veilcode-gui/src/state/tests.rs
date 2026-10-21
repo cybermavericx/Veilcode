@@ -686,8 +686,8 @@ fn g12_create_is_disabled_until_path_length_and_match_are_valid() {
     let fx = Fixture::new();
     let new = fx.path("new/vault.vc");
     assert!(problems(Some(&new), GOOD, GOOD).is_empty());
-    let short = "passphrase must be at least 12 characters";
-    let mismatch = "the passphrases do not match";
+    let short = "the vault password must be at least 12 characters";
+    let mismatch = "the vault passwords do not match";
     assert_eq!(messages(&problems(Some(&new), "short", "short")), [short]);
     // Characters are counted as core counts them (Unicode scalar values).
     let (e11, e12) = ("é".repeat(11), "é".repeat(12));
@@ -1339,4 +1339,79 @@ fn g20_lock_resets_the_prefix_field_and_a_scan_fills_it() {
         slow.forms.token_prefix, "Infra_Mask_",
         "filled from the vault"
     );
+}
+
+// ---- G23: identity text (D144) ----
+
+#[test]
+fn g23_status_line_shows_version_and_licence_from_cargo() {
+    assert_eq!(env!("CARGO_PKG_LICENSE"), "MIT OR Apache-2.0");
+    let want = format!(
+        "Veilcode {} · Open source (MIT OR Apache-2.0)",
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(viewmodel::status_line(), want);
+}
+
+#[test]
+fn g23_about_has_version_licence_copyright_and_notices() {
+    let lines = viewmodel::about_lines();
+    let all = lines.join("\n");
+    assert!(all.contains(env!("CARGO_PKG_VERSION")), "{all}");
+    assert!(all.contains("Apache License, Version 2.0"), "{all}");
+    assert!(all.contains("MIT license"), "{all}");
+    assert!(all.contains("THIRD_PARTY_NOTICES"), "{all}");
+    let copyright = lines
+        .iter()
+        .find(|l| l.starts_with("Copyright"))
+        .expect("a copyright line");
+    let license = include_str!("../../../../LICENSE-MIT");
+    assert!(
+        license.lines().any(|l| l == copyright),
+        "{copyright} not in LICENSE-MIT"
+    );
+    assert_eq!(viewmodel::BYLINE, "by Cybermavericx");
+    let text = format!("{all}{}{}", viewmodel::status_line(), viewmodel::BYLINE);
+    assert!(!text.contains("http"), "{text}");
+}
+
+// ---- G24: vault-password wording and profile hint (D144) ----
+
+#[test]
+fn g24_password_labels_and_create_checks_say_vault_password() {
+    assert_eq!(viewmodel::PASS_LABEL, "Vault password:");
+    assert_eq!(viewmodel::CONFIRM_LABEL, "Repeat vault password:");
+    assert_eq!(viewmodel::SEPARATE_PASS_LABEL, "Its vault password:");
+    for label in [
+        viewmodel::PASS_LABEL,
+        viewmodel::CONFIRM_LABEL,
+        viewmodel::SEPARATE_PASS_LABEL,
+    ] {
+        assert!(!label.to_lowercase().contains("passphrase"), "{label}");
+    }
+    let fx = Fixture::new();
+    let new = fx.path("new/vault.vc");
+    assert_eq!(
+        messages(&problems(Some(&new), "short", "other")),
+        [
+            "the vault password must be at least 12 characters",
+            "the vault passwords do not match"
+        ]
+    );
+    let g = viewmodel::guide(None, None);
+    assert!(g.steps[0].contains("vault password"), "{}", g.steps[0]);
+}
+
+#[test]
+fn g24_profile_hint_explains_what_the_file_holds() {
+    let hint = viewmodel::PROFILE_HINT;
+    for want in [
+        "plain text",
+        "key names",
+        "file paths",
+        "never secret values",
+    ] {
+        assert!(hint.contains(want), "{want} missing: {hint}");
+    }
+    assert!(!hint.contains("http"), "{hint}");
 }
