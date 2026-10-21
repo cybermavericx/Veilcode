@@ -76,9 +76,10 @@ macOS is built and tested in CI but not released.
    Rename-Item veilcode-<tag>-x86_64-pc-windows-msvc.exe veilcode.exe
    ```
 
-The binaries are **not code signed** yet (planned for a later version). On
-Windows, SmartScreen may warn when you start `veilcode.exe`; the checksum and
-attestation are how you check the file instead.
+The binaries are **not code signed** yet (planned for a later version, D143). On
+Windows, SmartScreen may warn when you start `veilcode.exe` or the `.msi`; the
+checksum and attestation are how you check the file instead. See
+[Troubleshooting](#troubleshooting) for what the warning looks like.
 
 ### Running the CLI
 
@@ -316,6 +317,14 @@ Limits you should know about:
   copying restored secrets. See the [threat model](docs/THREAT_MODEL.md).
 
 ## Troubleshooting
+
+- **Windows shows "Windows protected your PC".** This is Microsoft Defender
+  SmartScreen. It lists "Publisher: Unknown publisher" because the release
+  files are not code signed yet (D143); it was seen with the
+  `v0.2.0-rc4` `.msi`. Verify the file's checksum and attestation first
+  ([VERIFY_OFFLINE.md](docs/VERIFY_OFFLINE.md#1-check-the-release-files)).
+  Only if both pass, choose **More info**, then **Run anyway**. If either
+  check fails, do not run the file.
 
 - **The desktop app does not open on Windows.** Look for
   `startup-error.txt` in `%LOCALAPPDATA%\Cybermavericx\Veilcode\data`. It
