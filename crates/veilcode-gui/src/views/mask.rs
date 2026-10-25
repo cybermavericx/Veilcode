@@ -3,6 +3,7 @@
 use super::{chrome, clear_fields, pass_row, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::{AppState, MaskForm, Screen, SeparateVault, prefix_hint, prefix_problem};
+use crate::viewmodel;
 use eframe::egui;
 use veilcode_core::{DEFAULT_PREFIX, SecretString};
 
@@ -65,7 +66,12 @@ fn options(ui: &mut egui::Ui, state: &AppState, forms: &mut Forms) {
             &mut forms.browse,
             Target::SeparateVault,
         );
-        pass_row(ui, "Its passphrase:", &mut forms.separate_pass, PASS);
+        pass_row(
+            ui,
+            viewmodel::SEPARATE_PASS_LABEL,
+            &mut forms.separate_pass,
+            PASS,
+        );
         pass_row(
             ui,
             "Repeat (new vault only):",

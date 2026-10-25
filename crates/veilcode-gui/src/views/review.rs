@@ -63,14 +63,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
 /// One finding: checkbox, preview, View; double-clicking the row outside
 /// its widgets opens the viewer too (D137).
 fn finding_row(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms, row: &FindingRow) {
-    let builder = egui::UiBuilder::new()
-        .layout(egui::Layout::left_to_right(egui::Align::Center))
-        .sense(egui::Sense::click());
-    let r = ui.scope_builder(builder, |ui| finding_widgets(ui, state, forms, row));
-    if r.response.double_clicked() {
+    let r = clickable_row(ui, |ui| finding_widgets(ui, state, forms, row));
+    if r.double_clicked() {
         let r = state.view_finding(&row.id);
         state.report(r);
     }
+}
+
+/// A left-to-right row that senses clicks on its background. It starts one
+/// widget row high, like `ui.horizontal`; without that `max_rect` it takes
+/// the whole rest of the panel and centres itself in it (D144).
+pub(super) fn clickable_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    let builder = egui::UiBuilder::new()
+        .max_rect(egui::Rect::from_min_size(ui.cursor().min, size))
+        .layout(egui::Layout::left_to_right(egui::Align::Center))
+        .sense(egui::Sense::click());
+    ui.scope_builder(builder, add).response
 }
 
 fn finding_widgets(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms, row: &FindingRow) {
@@ -142,5 +151,51 @@ fn everywhere_modal(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) 
     });
     if modal.should_close() {
         forms.everywhere = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs one frame of an 800×600 screen with `clickable_row` at the top
+    /// of the central panel; returns the row, one widget row's height and
+    /// the panel height left under the row.
+    fn one_frame() -> (egui::Response, f32, f32) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = None;
+        let output = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let row = clickable_row(ui, |ui| {
+                    let mut on = true;
+                    ui.checkbox(&mut on, ".env:2 KEY_NAME");
+                    ui.label("abcd… (32)");
+                    let _ = ui.button("View");
+                });
+                let line = ui.spacing().interact_size.y;
+                out = Some((row, line, ui.available_height()));
+            });
+        });
+        output.drop_without_applying_deltas();
+        out.expect("frame ran")
+    }
+
+    #[test]
+    fn g21_finding_row_is_one_line_high() {
+        let (row, line, left) = one_frame();
+        assert!(
+            row.rect.height() < 2.0 * line,
+            "row is {} px high, one line is {line} px",
+            row.rect.height()
+        );
+        assert!(left > 300.0, "only {left} px left under the row");
+        assert!(row.sense.senses_click());
     }
 }

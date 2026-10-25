@@ -27,6 +27,11 @@ pub fn show(ui: &mut egui::Ui) {
         ui.label(line);
     }
     ui.label("On Windows both are in the local (non-roaming) app data folder.");
+    ui.separator();
+    ui.strong("About");
+    for line in viewmodel::about_lines() {
+        ui.label(line);
+    }
 }
 
 /// The numbered steps of the guide.

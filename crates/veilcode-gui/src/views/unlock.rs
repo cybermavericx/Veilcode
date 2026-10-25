@@ -3,7 +3,7 @@
 use super::{chrome, clear_fields, help, pass_row, path_row};
 use crate::app::{Forms, Target, typed_path};
 use crate::state::{AppState, GuiError, create_problems, suggested_vault_path};
-use crate::viewmodel::UNLOCK_HINT;
+use crate::viewmodel::{CONFIRM_LABEL, PASS_LABEL, UNLOCK_HINT};
 use eframe::egui;
 use veilcode_core::SecretString;
 
@@ -27,9 +27,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, forms: &mut Forms) {
         &mut forms.browse,
         Target::VaultFile,
     );
-    pass_row(ui, "Passphrase:", &mut forms.pass, PASS);
+    pass_row(ui, PASS_LABEL, &mut forms.pass, PASS);
     let problems = if forms.create {
-        pass_row(ui, "Repeat passphrase:", &mut forms.confirm, CONFIRM);
+        pass_row(ui, CONFIRM_LABEL, &mut forms.confirm, CONFIRM);
         ui.label("At least 12 characters. There is no recovery if you forget it.");
         let path = typed_path(&forms.vault_path).or_else(suggested_vault_path);
         create_problems(
