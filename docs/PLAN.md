@@ -123,5 +123,8 @@ Tests: T9, T10, T11, S8c, M12, R14–R17, R15b, VW1–VW3, VW3b, C10, C11, G15�
 Fix round (2026-10-19): sec H1, L1–L4 and QA G1–G6 (DECISIONS D136–D138).
 Acceptance: standard checks ✔ · G19 on Windows by the maintainer.
 
+## P9 — Windows code signing (not started)
+From D143, after SmartScreen warned on the `v0.2.0-rc4` `.msi`. The maintainer ruled (2026-10-21) that the final Windows release must be code signed; release candidates may stay unsigned. The signing option is still open (D143), and SPEC §13 ("planned v1.x") is updated when it is chosen. Scope, tests and acceptance are written then.
+
 ## Backlog (not scheduled)
-Code signing (SignPath for Windows OSS), macOS releases and notarization, `cargo-fuzz` targets for the scanner and vault open, Flatpak, zip input, pre-commit hook, `restore --strict`.
+Code signing (SignPath for Windows OSS; proposed as P9, D143), macOS releases and notarization, `cargo-fuzz` targets for the scanner and vault open, Flatpak, zip input, pre-commit hook, `restore --strict`.
