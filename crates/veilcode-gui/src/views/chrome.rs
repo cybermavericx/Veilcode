@@ -4,7 +4,7 @@
 
 use crate::state::AppState;
 use crate::theme::{self, Palette};
-use crate::viewmodel::{ResultCard, StepState, WorkflowRail};
+use crate::viewmodel::{self, ResultCard, StepState, WorkflowRail};
 use eframe::egui::{
     self, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
@@ -86,6 +86,7 @@ pub fn header(ui: &mut egui::Ui) {
                 .color(p.primary),
         );
         ui.label("Mask secrets in a copy of a code folder before sharing it.");
+        ui.label(egui::RichText::new(viewmodel::BYLINE).color(p.weak));
     });
 }
 

@@ -35,6 +35,12 @@ pub fn default_vault_path() -> Option<PathBuf> {
     Some(dirs.data_local_dir().join("vault.vc"))
 }
 
+/// D144: the user's home folder, where the GUI's folder pickers start.
+/// `None` if the OS reports no home directory.
+pub fn user_home_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
+}
+
 /// Minimum passphrase length in Unicode scalar values (D8).
 const MIN_PASSPHRASE_CHARS: usize = 12;
 

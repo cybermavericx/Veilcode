@@ -74,6 +74,8 @@ pub enum GuiError {
     ReviewNotConfirmed,
     ConfirmRequired,
     PassphraseMismatch,
+    /// D144: the GUI's own create check, worded "vault password".
+    PasswordTooShort,
     VaultExists,
     UnknownFinding,
     UnknownSession,
@@ -109,7 +111,8 @@ impl fmt::Display for GuiError {
             GuiError::NoScan => "scan a folder first",
             GuiError::ReviewNotConfirmed => "review the findings and confirm before masking",
             GuiError::ConfirmRequired => "this needs confirmation",
-            GuiError::PassphraseMismatch => "the passphrases do not match",
+            GuiError::PassphraseMismatch => "the vault passwords do not match",
+            GuiError::PasswordTooShort => "the vault password must be at least 12 characters",
             GuiError::VaultExists => "a vault already exists at this path; open it instead",
             GuiError::UnknownFinding => "finding not found; scan again",
             GuiError::UnknownSession => "session not found",
@@ -1217,7 +1220,7 @@ pub fn create_problems(
         Some(Ok(_)) => {}
     }
     if pass.chars().count() < MIN_PASSPHRASE_CHARS {
-        problems.push(GuiError::Core(CoreError::PassphraseTooShort));
+        problems.push(GuiError::PasswordTooShort);
     }
     if pass != confirm {
         problems.push(GuiError::PassphraseMismatch);

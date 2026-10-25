@@ -36,6 +36,7 @@ pub use text::{mask_text, restore_text};
 pub use token::{DEFAULT_PREFIX, TOKEN_PATTERN, Token, TokenPrefix};
 pub use vault::{
     ProjectKey, PurgeResult, Session, SessionId, Vault, VaultStatus, default_vault_path,
+    user_home_dir,
 };
 pub use view::{
     ELLIPSIS, FindingView, PartKind, VIEW_CONTEXT_LINES, VIEW_MAX_BYTES, ViewLine, ViewPart,

@@ -121,6 +121,11 @@ Branch `development/phase-8-gui-feedback`. Decisions D135–D139, D141; SPEC v1.
 
 Tests: T9, T10, T11, S8c, M12, R14–R17, R15b, VW1–VW3, VW3b, C10, C11, G15–G18, G15b, G16b, G20 (auto); G19 (manual, Windows).
 Fix round (2026-10-19): sec H1, L1–L4 and QA G1–G6 (DECISIONS D136–D138).
+rc4 feedback (2026-10-21, D144; tests G21–G24 auto, G25 manual):
+- [x] Review finding rows are one line high (the empty block under the first open group).
+- [x] Folder pickers start in the typed folder or the user's home folder, not the install folder.
+- [x] Status bar: version and licence; Help → About: version, licence, copyright, third-party notices; header byline "by Cybermavericx".
+- [x] "Vault password" wording in the GUI; a hint explaining the profile file.
 Acceptance: standard checks ✔ · G19 on Windows by the maintainer.
 
 ## P9 — Windows code signing (not started)
