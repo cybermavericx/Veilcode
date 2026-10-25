@@ -680,6 +680,27 @@ App-state tests with temp dirs. Pass when:
 - a Rescan offers no fill; after lock and unlock (vault read from disk) a scan of the same folder offers `Infra_Mask_`; a scan of another folder offers `VEILCODE_` with no remembered prefix; scanning the first folder again offers `Infra_Mask_`; a mask with `VEILCODE_` leaves no remembered prefix;
 - a mask into a separate vault (D64) with `Infra_Mask_` leaves the main vault without a remembered prefix, and the separate vault remembers `Infra_Mask_`;
 - with the app forms (`sync_lock`): a scan fills the field, a typed prefix is reset to `VEILCODE_` by lock, and after unlock a scan of the masked folder fills `Infra_Mask_`.
+### G21 — a finding row is one line high (D144, rc4 feedback)
+Type: auto
+Headless egui (`Context::run` with an 800×600 screen, a `CentralPanel`): the clickable row used for Review findings, holding a checkbox, a label and a button, is less than twice `spacing.interact_size.y` high, while the panel below it still has more than 300 px free; the row's response senses clicks.
+### G22 — folder pickers start in a user folder (D144, rc4 feedback)
+Type: auto
+- `folder_start` returns the typed folder when it exists, its nearest existing ancestor when it does not (the parent folder for a typed file; `/` for `/` on Unix), and the given home folder when the field is empty or relative; it returns nothing when there is no home folder.
+- For `\\server\share\dir`, `//host/share`, `\\?\UNC\…`, `\\.\…`, `\??\…` and `\\?\GLOBALROOT\…` it returns the home folder and calls the injected folder check zero times (refused as text by `check_local`, D130).
+- The dialogs `open_dialog` returns for the Scan input, Restore input, Mask output and Restore output have `initial_directory` set to the start folder passed in (a temp dir).
+### G23 — identity text: version, licence, copyright (D144, rc4 feedback)
+Type: auto
+- The status-bar line is exactly `Veilcode <CARGO_PKG_VERSION> · Open source (MIT OR Apache-2.0)`, and `CARGO_PKG_LICENSE` is `MIT OR Apache-2.0`.
+- The About lines contain the version, both licence names, a copyright line that occurs verbatim in `LICENSE-MIT` (read with `include_str!`), and `THIRD_PARTY_NOTICES`.
+- The header byline is "by Cybermavericx". None of these texts contain "http".
+### G24 — vault-password wording and profile hint (D144, rc4 feedback)
+Type: auto
+- The unlock labels are "Vault password:" and "Repeat vault password:", the separate-vault label is "Its vault password:", the create checks read "the vault password must be at least 12 characters" and "the vault passwords do not match"; no GUI label contains "passphrase".
+- The first guide step says "vault password".
+- The profile hint says the profile is plain text, names "key names" and "file paths", and says it never holds secret values.
+### G25 — manual QA of the rc4 fixes (D144)
+Type: manual
+On Windows 11 with the release build, light and dark theme: Review rows have no empty block above or below them; every folder Browse opens in the user's home folder (or the typed folder), not the install folder; the status bar shows version and licence; Help shows About; the header shows "by Cybermavericx"; the unlock screen says "Vault password"; the profile hint is readable.
 ### G19 — manual QA of the P8 features (D135–D138)
 Type: manual
 On Windows 11 with the release build, light and dark theme:
