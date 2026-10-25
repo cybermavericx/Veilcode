@@ -289,23 +289,34 @@ pub fn accept_pick(state: &mut AppState, forms: &mut Forms, t: Target, path: &Pa
 }
 
 /// Where a folder picker starts (D144): the nearest existing folder of the
-/// typed path, else `home`. A relative path, or a network or device path
+/// typed path (of its parent, for the input pickers), else `home`. A relative path, or a network or device path
 /// (refused as text first, D130, so no filesystem call reaches it), falls
 /// back to `home`.
-fn folder_start(typed: &str, home: Option<PathBuf>) -> Option<PathBuf> {
-    folder_start_with(typed, home, Path::is_dir)
+fn folder_start(t: Target, typed: &str, home: Option<PathBuf>) -> Option<PathBuf> {
+    folder_start_with(t, typed, home, Path::is_dir)
 }
 
 /// `folder_start` with the folder check passed in, so tests can count the
 /// filesystem calls.
 fn folder_start_with(
+    t: Target,
     typed: &str,
     home: Option<PathBuf>,
     mut is_dir: impl FnMut(&Path) -> bool,
 ) -> Option<PathBuf> {
-    typed_path(typed)
-        .filter(|p| p.is_absolute() && check_local(p).is_ok())
-        .and_then(|p| p.ancestors().find(|a| is_dir(a)).map(Path::to_path_buf))
+    let typed = typed_path(typed).filter(|p| p.is_absolute() && check_local(p).is_ok());
+    // D144 L1 (B): the dialog follows links while it lists a folder, so an
+    // input folder (on Restore, the AI's folder) is neither checked nor
+    // opened: its picker starts in the parent.
+    let from = if t.picks_existing_dir() {
+        typed
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+    } else {
+        typed
+    };
+    from.and_then(|p| p.ancestors().find(|a| is_dir(a)).map(Path::to_path_buf))
         .or(home)
 }
 
@@ -428,7 +439,7 @@ impl VeilApp {
             // Only the folder pickers use it: no filesystem call for the others.
             let start = t
                 .is_folder()
-                .then(|| folder_start(self.forms.field(t), user_home_dir()))
+                .then(|| folder_start(t, self.forms.field(t), user_home_dir()))
                 .flatten();
             self.dialog = open_dialog(t, self.forms.create, start);
         }
@@ -556,7 +567,7 @@ mod tests {
         let typed = tmp.path().join("work");
         std::fs::create_dir_all(&home).expect("home");
         std::fs::create_dir_all(&typed).expect("work");
-        let start = |t: &str| folder_start(t, Some(home.clone()));
+        let start = |t: &str| folder_start(Target::MaskOut, t, Some(home.clone()));
         let s = typed.display().to_string();
         assert_eq!(start(&s), Some(typed.clone()));
         let missing = typed.join("not-yet").join("out");
@@ -569,6 +580,36 @@ mod tests {
         assert_eq!(start(&file.display().to_string()), Some(typed.clone()));
         #[cfg(unix)]
         assert_eq!(start("/"), Some(PathBuf::from("/")));
+    }
+
+    /// D144 L1 (B): an input picker starts in the typed folder's parent and
+    /// never checks the typed folder itself (the dialog follows links).
+    #[test]
+    fn g22_input_pickers_start_in_the_parent_of_the_typed_folder() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let typed = tmp.path().join("ai-output");
+        std::fs::create_dir_all(&typed).expect("typed");
+        let home = Some(tmp.path().join("home"));
+        for t in [Target::ScanInput, Target::RestoreIn] {
+            let mut seen = Vec::new();
+            let start = folder_start_with(t, &typed.display().to_string(), home.clone(), |p| {
+                seen.push(p.to_path_buf());
+                p.is_dir()
+            });
+            assert_eq!(start.as_deref(), Some(tmp.path()), "{t:?}");
+            assert!(!seen.contains(&typed), "{t:?} checked the typed folder");
+            let missing = typed.join("gone");
+            let s = missing.display().to_string();
+            assert_eq!(
+                folder_start(t, &s, home.clone()),
+                Some(typed.clone()),
+                "{t:?}"
+            );
+            #[cfg(unix)]
+            assert_eq!(folder_start(t, "/", home.clone()), home, "{t:?}");
+        }
+        let s = typed.display().to_string();
+        assert_eq!(folder_start(Target::MaskOut, &s, home), Some(typed));
     }
 
     /// D130: network and device paths are refused as text, so the folder
@@ -585,14 +626,14 @@ mod tests {
             r"\\?\GLOBALROOT\Device",
         ] {
             let mut calls = 0;
-            let start = folder_start_with(typed, Some(home.clone()), |_| {
+            let start = folder_start_with(Target::ScanInput, typed, Some(home.clone()), |_| {
                 calls += 1;
                 true
             });
             assert_eq!(start, Some(home.clone()), "{typed}");
             assert_eq!(calls, 0, "{typed}");
         }
-        assert_eq!(folder_start("", None), None);
+        assert_eq!(folder_start(Target::MaskOut, "", None), None);
     }
 
     #[test]
