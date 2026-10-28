@@ -685,7 +685,8 @@ Type: auto
 Headless egui (`Context::run` with an 800×600 screen, a `CentralPanel`): the clickable row used for Review findings, holding a checkbox, a label and a button, is less than twice `spacing.interact_size.y` high, while the panel below it still has more than 300 px free; the row's response senses clicks.
 ### G22 — folder pickers start in a user folder (D144, rc4 feedback)
 Type: auto
-- `folder_start` returns the typed folder when it exists, its nearest existing ancestor when it does not (the parent folder for a typed file; `/` for `/` on Unix), and the given home folder when the field is empty or relative; it returns nothing when there is no home folder.
+- For the output pickers, `folder_start` returns the typed folder when it exists, its nearest existing ancestor when it does not (the parent folder for a typed file; `/` for `/` on Unix), and the given home folder when the field is empty or relative; it returns nothing when there is no home folder.
+- For the Scan and Restore input pickers (D144 L1, option B), it returns the nearest existing folder of the typed folder's parent, never calls the folder check on the typed folder itself, and returns the home folder for `/` on Unix (no parent).
 - For `\\server\share\dir`, `//host/share`, `\\?\UNC\…`, `\\.\…`, `\??\…` and `\\?\GLOBALROOT\…` it returns the home folder and calls the injected folder check zero times (refused as text by `check_local`, D130).
 - The dialogs `open_dialog` returns for the Scan input, Restore input, Mask output and Restore output have `initial_directory` set to the start folder passed in (a temp dir).
 ### G23 — identity text: version, licence, copyright (D144, rc4 feedback)
@@ -700,7 +701,7 @@ Type: auto
 - The profile hint says the profile is plain text, names "key names" and "file paths", and says it never holds secret values.
 ### G25 — manual QA of the rc4 fixes (D144)
 Type: manual
-On Windows 11 with the release build, light and dark theme: Review rows have no empty block above or below them; every folder Browse opens in the user's home folder (or the typed folder), not the install folder; the status bar shows version and licence; Help shows About; the header shows "by Cybermavericx"; the unlock screen says "Vault password"; the profile hint is readable.
+On Windows 11 with the release build, light and dark theme: Review rows have no empty block above or below them; every folder Browse opens in the user's home folder, not the install folder; with a folder typed, the Scan and Restore input pickers open in its parent folder and the output pickers in the typed folder; the status bar shows version and licence; Help shows About; the header shows "by Cybermavericx"; the unlock screen says "Vault password"; the profile hint is readable.
 ### G19 — manual QA of the P8 features (D135–D138)
 Type: manual
 On Windows 11 with the release build, light and dark theme:
