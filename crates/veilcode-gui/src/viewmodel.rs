@@ -3,7 +3,9 @@
 //! is the one exception and does not use these types.
 
 use std::collections::{BTreeMap, BTreeSet};
-use veilcode_core::{Finding, KeptReason, MaskReport, RestoreReport, Session, VaultStatus};
+use veilcode_core::{
+    Changed, Finding, KeptReason, MaskReport, RestoreReport, Session, Token, VaultStatus,
+};
 
 /// One finding as shown in the review list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +122,8 @@ pub struct RestoreView {
     pub ignored_new_secrets: usize,
     pub unknown: usize,
     pub missing: usize,
+    /// D146: placeholders the developer replaced (either choice).
+    pub changed_by_developer: usize,
     pub not_copied: usize,
     pub tokens_in_unscanned: usize,
     pub session_forgotten: bool,
@@ -142,6 +146,7 @@ pub fn restore_view(r: &RestoreReport, out: Option<String>) -> RestoreView {
         ignored_new_secrets: r.ignored_new_secrets,
         unknown: r.unknown.len(),
         missing: r.missing.len(),
+        changed_by_developer: r.changed_by_developer.len(),
         not_copied: r.not_copied.len(),
         tokens_in_unscanned: r.tokens_in_unscanned,
         session_forgotten: r.session_forgotten,
@@ -161,15 +166,44 @@ fn outcome(r: &RestoreReport) -> String {
                 new_secrets,
                 not_copied,
                 tokens_in_unscanned,
+                changed_by_developer,
             }),
             _,
         ) => format!(
             "session kept: not clean ({missing} missing, {unknown} unknown, \
              {new_secrets} new secrets, {not_copied} not copied, \
-             {tokens_in_unscanned} tokens in unscanned files)"
+             {tokens_in_unscanned} tokens in unscanned files, \
+             {changed_by_developer} changed by developer)"
         ),
         (None, false) => "session kept".to_string(),
     }
+}
+
+/// D146: a placeholder the developer replaced, while the restore waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedRow {
+    /// `rel_path:line` of the developer's value.
+    pub place: String,
+    pub key: String,
+    /// The placeholder that is gone.
+    pub placeholder: String,
+    /// D25 preview of the developer's value.
+    pub preview: String,
+    pub use_original: bool,
+}
+
+/// The rows of the "Changed by developer" list.
+pub fn changed_rows(items: &[Changed], originals: &BTreeSet<Token>) -> Vec<ChangedRow> {
+    items
+        .iter()
+        .map(|c| ChangedRow {
+            place: format!("{}:{}", c.finding.rel_path, c.finding.line),
+            key: c.finding.key_name.clone().unwrap_or_default(),
+            placeholder: c.token.as_str().to_string(),
+            preview: c.finding.preview.clone(),
+            use_original: originals.contains(&c.token),
+        })
+        .collect()
 }
 
 /// One row of the Sessions screen.
@@ -489,6 +523,7 @@ pub fn restore_card(r: &RestoreView) -> ResultCard {
             format!("New secrets ignored by profile: {}", r.ignored_new_secrets),
             format!("Unknown tokens: {}", r.unknown),
             format!("Missing tokens: {}", r.missing),
+            format!("Changed by developer: {}", r.changed_by_developer),
             format!("Files not copied: {}", r.not_copied),
             format!("Tokens in unscanned files: {}", r.tokens_in_unscanned),
         ],

@@ -2,15 +2,17 @@
 //! their values (SPEC §6.2, D29, D55).
 
 use crate::error::{CoreError, Result};
+use crate::hex;
 use crate::mask::skipped_paths;
 use crate::paths::{self, OutputDir, RelPath};
-use crate::profile::Profile;
-use crate::report::{KeptReason, RestoreReport};
+use crate::profile::{Profile, normalise_key};
+use crate::report::{Changed, KeptReason, RestoreReport};
 use crate::scan::walk::{self, Class, FileEntry};
-use crate::scan::{self, ScanOptions, ScanReport, Scanner};
+use crate::scan::{self, Finding, ScanOptions, ScanReport, Scanner};
 use crate::secret::SecretBytes;
 use crate::token::{KnownPrefixes, MAX_TOKEN_LEN, Token, shape_ends};
 use crate::vault::{Session, SessionId, Vault};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -25,13 +27,39 @@ pub(crate) struct Restored {
     pub(crate) seen: Vec<Token>,
     /// Token-shaped strings not in the vault.
     pub(crate) unknown: Vec<String>,
+    /// D146: pairs whose original was written over the developer's value.
+    pub(crate) applied: Vec<Changed>,
+}
+
+/// D146: which placeholders changed by the developer get their original
+/// value back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Originals {
+    /// Keep every developer value (the default).
+    #[default]
+    Keep,
+    /// Use the original for every pair.
+    All,
+    /// Use the original for these tokens only.
+    Only(BTreeSet<Token>),
+}
+
+impl Originals {
+    fn wants(&self, token: &Token) -> bool {
+        match self {
+            Originals::Keep => false,
+            Originals::All => true,
+            Originals::Only(set) => set.contains(token),
+        }
+    }
 }
 
 /// Restores `input` into a new `out` (SPEC §6.2). Every vault token is
 /// replaced; `session` (default: newest, D53) decides the walk options
 /// (D57r) and what counts as missing. A clean restore forgets the session
 /// unless `keep` (D60), and only after every output is written and synced.
-/// New secrets the `profile` ignores are only counted (D78).
+/// New secrets the `profile` ignores are only counted (D78). Every
+/// developer value that replaced a placeholder is kept (D146).
 pub fn restore(
     input: &Path,
     out: &Path,
@@ -40,18 +68,133 @@ pub fn restore(
     keep: bool,
     profile: &Profile,
 ) -> Result<RestoreReport> {
+    restore_with(input, out, vault, session, keep, profile, &Originals::Keep)
+}
+
+/// `restore`, with the original value written back for the placeholders
+/// changed by the developer that `originals` chooses (D146).
+pub fn restore_with(
+    input: &Path,
+    out: &Path,
+    vault: &mut Vault,
+    session: Option<&SessionId>,
+    keep: bool,
+    profile: &Profile,
+    originals: &Originals,
+) -> Result<RestoreReport> {
     let session = require_session(vault, session, None)?;
     let scanner = Scanner::with_prefixes(profile, vault.known_prefixes())?;
     let mut scanned = ScanReport::default();
     let (dirs, files) = walk_input(input, &session.scan_options, &mut scanned)?;
+    let chosen = if *originals == Originals::Keep {
+        Vec::new()
+    } else {
+        let pairs = check_files(&files, &scanner, vault, &session)?;
+        pairs
+            .into_iter()
+            .filter(|c| originals.wants(&c.token))
+            .collect()
+    };
+    between_passes();
     let out = OutputDir::prepare(out, input)?;
     let tree = Tree {
         dirs: &dirs,
         files: &files,
         scanner: &scanner,
+        chosen: &chosen,
     };
-    let (report, seen) = restore_tree(&tree, &out, vault, scanned).map_err(|e| out.discard(e))?;
-    finish(vault, session, keep, report, &seen)
+    let (report, seen, applied) =
+        restore_tree(&tree, &out, vault, scanned).map_err(|e| out.discard(e))?;
+    finish(vault, session, keep, report, &seen, applied)
+}
+
+/// D146: the placeholders changed by the developer in `input`, read-only
+/// (nothing is written), so a caller can ask before `restore_with`.
+pub fn restore_check(
+    input: &Path,
+    vault: &Vault,
+    session: Option<&SessionId>,
+    profile: &Profile,
+) -> Result<Vec<Changed>> {
+    let session = require_session(vault, session, None)?;
+    let scanner = Scanner::with_prefixes(profile, vault.known_prefixes())?;
+    let mut scanned = ScanReport::default();
+    let (_, files) = walk_input(input, &session.scan_options, &mut scanned)?;
+    check_files(&files, &scanner, vault, &session)
+}
+
+/// The read pass of D146: scans and finds tokens as the write pass does,
+/// then pairs the missing tokens with the new secrets.
+fn check_files(
+    files: &[InputFile],
+    scanner: &Scanner<'_>,
+    vault: &Vault,
+    session: &Session,
+) -> Result<Vec<Changed>> {
+    let mut scanned = ScanReport::default();
+    let mut seen = Vec::new();
+    for (_, file) in files {
+        if let Class::Text(content) = walk::classify(&file.path, file.ident)? {
+            scan::scan_text(scanner, file, &content, &mut scanned);
+            let found = vault_tokens(&content, vault, scanner.known());
+            seen.extend(found.into_iter().map(|f| f.2));
+        }
+    }
+    let gone = missing(session, &seen);
+    let new: Vec<Finding> = scanned
+        .findings
+        .into_iter()
+        .filter(|f| f.ignored.is_none())
+        .collect();
+    Ok(pairs(vault, session, &gone, &new))
+}
+
+/// D146: a missing token and a new secret pair when both have a key name,
+/// the names match (D76), the secret's file is one the token was written
+/// to (when the session recorded it), and neither has another match.
+fn pairs(vault: &Vault, session: &Session, missing: &[Token], found: &[Finding]) -> Vec<Changed> {
+    let fits = |t: &Token, f: &Finding| {
+        let name = vault.entry_name(t).filter(|n| !n.is_empty());
+        let same = match (name, f.key_name.as_deref()) {
+            (Some(a), Some(b)) => normalise_key(a) == normalise_key(b),
+            _ => false,
+        };
+        let files = session.files.get(t);
+        same && files.is_none_or(|list| list.contains(&f.rel_path))
+    };
+    let mut out = Vec::new();
+    for t in missing {
+        let mut candidates = found.iter().filter(|f| fits(t, f));
+        let (Some(f), None) = (candidates.next(), candidates.next()) else {
+            continue;
+        };
+        if missing.iter().filter(|u| fits(u, f)).count() == 1 {
+            out.push(Changed {
+                token: t.clone(),
+                finding: f.clone(),
+                original_used: false,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+thread_local! {
+    static BETWEEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test hook (R16): runs `f` once, between the check and the write pass.
+#[cfg(test)]
+pub(crate) fn set_between_passes(f: Box<dyn FnOnce()>) {
+    BETWEEN.with(|b| *b.borrow_mut() = Some(f));
+}
+
+fn between_passes() {
+    #[cfg(test)]
+    if let Some(f) = BETWEEN.with(|b| b.borrow_mut().take()) {
+        f();
+    }
 }
 
 /// The validated walk of the restore input.
@@ -59,7 +202,12 @@ struct Tree<'a> {
     dirs: &'a [RelPath],
     files: &'a [InputFile],
     scanner: &'a Scanner<'a>,
+    /// D146: the pairs to restore with their original.
+    chosen: &'a [Changed],
 }
+
+/// The report, the replaced tokens and the D146 pairs given their original.
+type TreeResult = (RestoreReport, Vec<Token>, Vec<Changed>);
 
 /// Writes and syncs the whole output; session fields are left unset.
 fn restore_tree(
@@ -67,7 +215,7 @@ fn restore_tree(
     out: &OutputDir,
     vault: &Vault,
     mut scanned: ScanReport,
-) -> Result<(RestoreReport, Vec<Token>)> {
+) -> Result<TreeResult> {
     for dir in tree.dirs {
         paths::create_dir(out, dir)?;
     }
@@ -77,6 +225,7 @@ fn restore_tree(
         scanner: tree.scanner,
         vault,
         known: tree.scanner.known(),
+        chosen: tree.chosen,
     };
     for (rel, file) in tree.files {
         restore_file(&ctx, rel, file, &mut scanned, &mut acc)?;
@@ -90,6 +239,8 @@ fn restore_tree(
         .findings
         .into_iter()
         .partition(|f| f.ignored.is_some());
+    // D146: a developer value replaced by its original is not new.
+    new_secrets.retain(|f| !acc.applied.iter().any(|c| c.finding.id == f.id));
     new_secrets.sort_by(|a, b| (&a.rel_path, a.start).cmp(&(&b.rel_path, b.start)));
     let report = RestoreReport {
         files_written: acc.written,
@@ -101,7 +252,7 @@ fn restore_tree(
         tokens_in_unscanned: acc.tokens_in_unscanned,
         ..RestoreReport::default()
     };
-    Ok((report, acc.seen))
+    Ok((report, acc.seen, acc.applied))
 }
 
 /// The walk, with every path validated before anything is written.
@@ -149,15 +300,30 @@ pub(crate) fn require_session(
 
 /// Fills the session fields and applies D60/D71: forget only if clean and
 /// not `keep`. Runs after all outputs are written (any earlier error
-/// returns before this, leaving the vault untouched).
+/// returns before this, leaving the vault untouched). D146: pairs left
+/// with the developer's value join `applied` in `changed_by_developer`.
 pub(crate) fn finish(
     vault: &mut Vault,
     session: Session,
     keep: bool,
     mut report: RestoreReport,
     seen: &[Token],
+    applied: Vec<Changed>,
 ) -> Result<RestoreReport> {
-    report.missing = missing(&session, seen);
+    let gone = missing(&session, seen);
+    let kept = pairs(vault, &session, &gone, &report.new_secrets);
+    report.missing = gone
+        .into_iter()
+        .filter(|t| !kept.iter().any(|c| &c.token == t))
+        .collect();
+    report
+        .new_secrets
+        .retain(|f| !kept.iter().any(|c| c.finding.id == f.id));
+    let changed_by_developer = kept.len();
+    report.changed_by_developer = applied.into_iter().chain(kept).collect();
+    report
+        .changed_by_developer
+        .sort_by(|a, b| a.token.cmp(&b.token));
     report.session_id = Some(session.id.clone());
     let distinct: BTreeSet<&Token> = seen.iter().collect();
     report.foreign_session_tokens = distinct
@@ -170,6 +336,7 @@ pub(crate) fn finish(
         report.new_secrets.len(),
         report.not_copied.len(),
         report.tokens_in_unscanned,
+        changed_by_developer,
     ];
     if keep {
         report.kept_reason = Some(KeptReason::KeepRequested);
@@ -180,6 +347,7 @@ pub(crate) fn finish(
             new_secrets,
             not_copied,
             tokens_in_unscanned,
+            changed_by_developer,
         ] = counts;
         report.kept_reason = Some(KeptReason::NotClean {
             missing,
@@ -187,6 +355,7 @@ pub(crate) fn finish(
             new_secrets,
             not_copied,
             tokens_in_unscanned,
+            changed_by_developer,
         });
     } else {
         vault.forget(&session.id)?;
@@ -210,6 +379,7 @@ struct Totals {
     unknown: BTreeSet<String>,
     changed: Vec<String>,
     tokens_in_unscanned: usize,
+    applied: Vec<Changed>,
 }
 
 struct FileCtx<'a> {
@@ -217,6 +387,24 @@ struct FileCtx<'a> {
     scanner: &'a Scanner<'a>,
     vault: &'a Vault,
     known: &'a KnownPrefixes,
+    chosen: &'a [Changed],
+}
+
+/// D146: the chosen pairs in `rel`, if the file is still the one they were
+/// found in (same sha256 as in the check pass).
+fn originals_for<'c>(ctx: &FileCtx<'c>, rel: &RelPath, content: &[u8]) -> Vec<&'c Changed> {
+    let here: Vec<&Changed> = ctx
+        .chosen
+        .iter()
+        .filter(|c| c.finding.rel_path == rel.as_str())
+        .collect();
+    if here.is_empty() {
+        return here;
+    }
+    let sha256 = hex::encode(&Sha256::digest(content));
+    here.into_iter()
+        .filter(|c| c.finding.file_sha256 == sha256)
+        .collect()
 }
 
 /// Restores one file: text gets tokens replaced (and is scanned for new
@@ -231,7 +419,8 @@ fn restore_file(
     match walk::classify(&file.path, file.ident)? {
         Class::Text(content) => {
             scan::scan_text(ctx.scanner, file, &content, scanned);
-            let restored = replace_tokens(&content, ctx.vault, ctx.known);
+            let originals = originals_for(ctx, rel, &content);
+            let restored = replace_with(&content, ctx.vault, ctx.known, &originals);
             // D55: a file that received a real value is owner-only.
             let mode = if restored.seen.is_empty() {
                 file.mode
@@ -241,6 +430,7 @@ fn restore_file(
             paths::write_new(ctx.out, rel, &restored.bytes, mode)?;
             acc.seen.extend(restored.seen);
             acc.unknown.extend(restored.unknown);
+            acc.applied.extend(restored.applied);
         }
         Class::Binary | Class::Oversized => {
             let mut counter = TokenCounter::new(ctx.vault, ctx.known);
@@ -260,7 +450,31 @@ fn restore_file(
 /// and non-overlapping. D29, D138: a match is tried at every offset where a
 /// `known` prefix starts, and a candidate counts only if it is a vault key.
 pub(crate) fn replace_tokens(content: &[u8], vault: &Vault, known: &KnownPrefixes) -> Restored {
-    let found = vault_tokens(content, vault, known);
+    replace_with(content, vault, known, &[])
+}
+
+/// `replace_tokens`, plus D146: each pair in `originals` whose span
+/// overlaps no token has its developer value replaced by the original.
+fn replace_with(
+    content: &[u8],
+    vault: &Vault,
+    known: &KnownPrefixes,
+    originals: &[&Changed],
+) -> Restored {
+    let mut found = vault_tokens(content, vault, known);
+    let mut applied = Vec::new();
+    for c in originals {
+        let (start, end) = (c.finding.start, c.finding.end);
+        let free = end <= content.len() && !found.iter().any(|f| start < f.1 && f.0 < end);
+        if let (true, Some(value)) = (free, vault.value(&c.token)) {
+            found.push((start, end, c.token.clone(), value));
+            applied.push(Changed {
+                original_used: true,
+                ..(*c).clone()
+            });
+        }
+    }
+    found.sort_by_key(|f| f.0);
     // L1: exact size, so a buffer holding values never reallocates.
     let grow: usize = found.iter().map(|f| f.3.len()).sum();
     let shrink: usize = found.iter().map(|f| f.1 - f.0).sum();
@@ -278,6 +492,7 @@ pub(crate) fn replace_tokens(content: &[u8], vault: &Vault, known: &KnownPrefixe
         bytes,
         seen: found.into_iter().map(|f| f.2).collect(),
         unknown,
+        applied,
     }
 }
 
@@ -384,3 +599,6 @@ mod tests;
 
 #[cfg(test)]
 mod prefix_tests;
+
+#[cfg(test)]
+mod changed_tests;

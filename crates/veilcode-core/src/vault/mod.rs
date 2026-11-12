@@ -23,6 +23,7 @@ pub(crate) use format::KdfParams;
 use format::{HEADER_LEN, Header, NONCE_LEN, SALT_LEN};
 use model::{Entry, VaultData};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -281,6 +282,7 @@ impl Vault {
         tokens: Vec<Token>,
         ttl_days: u32,
         scan_options: ScanOptions,
+        files: BTreeMap<Token, Vec<String>>,
     ) -> Result<SessionId> {
         let ttl = session::ttl_secs(ttl_days)?;
         let mut raw = [0u8; 8];
@@ -294,8 +296,23 @@ impl Vault {
             source_label: source_label.to_string(),
             scan_options,
             tokens,
+            files,
         });
         Ok(id)
+    }
+
+    /// The key name `token` was made from (empty if none).
+    pub(crate) fn entry_name(&self, token: &Token) -> Option<&str> {
+        self.data.entries.get(token).map(|e| e.name.as_str())
+    }
+
+    /// Test shorthand: drop every session's D146 files record, as in a
+    /// vault written before D146.
+    #[cfg(test)]
+    pub(crate) fn clear_files_record(&mut self) {
+        for s in &mut self.data.sessions {
+            s.files.clear();
+        }
     }
 
     /// Test shorthand: a session with the default TTL and walk options.
@@ -310,6 +327,7 @@ impl Vault {
             tokens,
             session::DEFAULT_TTL_DAYS,
             ScanOptions::default(),
+            BTreeMap::new(),
         )
     }
 

@@ -7,8 +7,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use veilcode_core::{
-    CoreError, IgnoreEntry, MaskOptions, Profile, ProjectKey, ScanOptions, ScanReport, Selection,
-    SessionId, TokenPrefix, Vault, to_json,
+    CoreError, IgnoreEntry, MaskOptions, Originals, Profile, ProjectKey, ScanOptions, ScanReport,
+    Selection, SessionId, TokenPrefix, Vault, to_json,
 };
 
 pub fn run(cli: &Cli) -> Result<()> {
@@ -24,7 +24,15 @@ pub fn run(cli: &Cli) -> Result<()> {
             out,
             session,
             keep,
-        } => restore(cli, dir, out, session.as_deref(), *keep),
+            use_original,
+        } => {
+            let originals = if *use_original {
+                Originals::All
+            } else {
+                Originals::Keep
+            };
+            restore(cli, dir, out, session.as_deref(), *keep, &originals)
+        }
         Cmd::Session(cmd) => session(cli, cmd),
         Cmd::Vault(VaultCmd::Status) => status(cli),
         Cmd::Vault(VaultCmd::Purge { yes }) => purge(cli, *yes),
@@ -180,13 +188,22 @@ fn parse_session(id: &str) -> Result<SessionId> {
     SessionId::try_from(id.to_string()).map_err(|_| anyhow!("invalid session id {id:?}"))
 }
 
-fn restore(cli: &Cli, dir: &Path, out: &Path, session: Option<&str>, keep: bool) -> Result<()> {
+fn restore(
+    cli: &Cli,
+    dir: &Path,
+    out: &Path,
+    session: Option<&str>,
+    keep: bool,
+    originals: &Originals,
+) -> Result<()> {
     check_outputs(cli, Some(dir), None)?;
     let session = session.map(parse_session).transpose()?;
     let (profile, _) = load_profile(cli)?;
     let (mut vault, path) = open_vault(cli)?;
     let existed = out.exists();
-    let result = veilcode_core::restore(dir, out, &mut vault, session.as_ref(), keep, &profile);
+    let session = session.as_ref();
+    let result =
+        veilcode_core::restore_with(dir, out, &mut vault, session, keep, &profile, originals);
     let rep = result.map_err(|e| forget_hint(e, existed, out))?;
     output::restore(&rep, !path.exists());
     write_report(cli, Some(dir), &to_json(&rep)?)

@@ -142,6 +142,19 @@ pub fn restore(r: &RestoreReport, vault_removed: bool) {
     for f in &r.new_secrets {
         eprintln!("new secret: {}", finding_line(f));
     }
+    for c in &r.changed_by_developer {
+        let f = &c.finding;
+        let key = f.key_name.as_deref().unwrap_or("-");
+        let what = if c.original_used {
+            "original restored"
+        } else {
+            "kept the developer's value"
+        };
+        eprintln!(
+            "changed by developer: {}:{} {key} ({what})",
+            f.rel_path, f.line
+        );
+    }
     let counts = [
         (r.ignored_new_secrets, "new secrets ignored by profile"),
         (r.unknown.len(), "unknown tokens"),

@@ -557,3 +557,44 @@ fn c11_mask_uses_the_prefix_remembered_for_the_folder() {
     assert_eq!(help.code, 0);
     assert!(help.out().contains("remembered"), "{}", help.out());
 }
+
+/// The `.env` text with its `VEILCODE_DB_PASSWORD_` token replaced by `to`.
+fn replace_pw_token(env: &str, to: &str) -> String {
+    let at = env.find("VEILCODE_DB_PASSWORD_").expect("token");
+    let end = at + "VEILCODE_DB_PASSWORD_".len() + 8;
+    format!("{}{to}{}", &env[..at], &env[end..])
+}
+
+#[test]
+fn c12_restore_use_original() {
+    let mut ctx = Ctx::new();
+    let (pw, dev) = (fake_password(), fake_password());
+    ctx.secrets.extend([pw.clone(), dev.clone()]);
+    let (input, masked) = (ctx.path("project"), ctx.path("masked"));
+    write_tree(
+        &input,
+        &[(".env", format!("DB_PASSWORD={pw}\n").as_bytes())],
+    );
+    let m = ctx.run_pass(&["mask", &s(&input), "--out", &s(&masked)]);
+    assert_eq!(m.code, 0, "{}", m.err());
+    let env = String::from_utf8(std::fs::read(masked.join(".env")).expect("read")).expect("utf8");
+    std::fs::write(masked.join(".env"), replace_pw_token(&env, &dev)).expect("write");
+    let r1 = ctx.path("r1");
+    let kept = ctx.run_pass(&["restore", &s(&masked), "--out", &s(&r1)]);
+    assert_eq!(kept.code, 0, "{}", kept.err());
+    let want = "changed by developer: .env:1 DB_PASSWORD (kept the developer's value)";
+    assert!(kept.err().contains(want), "{}", kept.err());
+    let restored = std::fs::read(r1.join(".env")).expect("read");
+    assert!(restored == format!("DB_PASSWORD={dev}\n").into_bytes());
+    let r2 = ctx.path("r2");
+    let args = ["restore", &s(&masked), "--out", &s(&r2), "--use-original"];
+    let used = ctx.run_pass(&args);
+    assert_eq!(used.code, 0, "{}", used.err());
+    let want = "changed by developer: .env:1 DB_PASSWORD (original restored)";
+    assert!(used.err().contains(want), "{}", used.err());
+    let restored = std::fs::read(r2.join(".env")).expect("read");
+    assert!(restored == format!("DB_PASSWORD={pw}\n").into_bytes());
+    let help = ctx.run(&["restore", "--help"], "");
+    assert_eq!(help.code, 0);
+    assert!(help.out().contains("--use-original"), "{}", help.out());
+}

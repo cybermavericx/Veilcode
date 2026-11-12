@@ -136,7 +136,9 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
     not_copied.sort();
     let tokens = session_tokens.len();
     let options = run.report.options.clone();
-    let session_id = vault.add_session(run.label, session_tokens, run.opts.ttl_days, options)?;
+    let files = token_files(run.tree, &plans);
+    let ttl = run.opts.ttl_days;
+    let session_id = vault.add_session(run.label, session_tokens, ttl, options, files)?;
     vault.remember_prefix(run.project.clone(), prefix);
     vault.save()?;
     Ok(MaskReport {
@@ -148,6 +150,20 @@ fn mask_into(run: &Run<'_>, out: &OutputDir, vault: &mut Vault) -> Result<MaskRe
         ignored_by_profile: run.ignored_by_profile,
         already_tokens,
     })
+}
+
+/// D146: the files each token was written to, in walk order.
+fn token_files(tree: &Input, plans: &[Vec<Replacement>]) -> BTreeMap<Token, Vec<String>> {
+    let mut files: BTreeMap<Token, Vec<String>> = BTreeMap::new();
+    for (file, plan) in tree.text.iter().zip(plans) {
+        for r in plan {
+            let list = files.entry(r.token.clone()).or_default();
+            if !list.iter().any(|p| p == file.rel.as_str()) {
+                list.push(file.rel.as_str().to_string());
+            }
+        }
+    }
+    files
 }
 
 /// SPEC §6.1 step 2: every `rel_path` in the report is valid, before any I/O.

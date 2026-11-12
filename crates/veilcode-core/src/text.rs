@@ -8,6 +8,7 @@ use crate::restore::{finish, replace_tokens, require_session};
 use crate::scan::{self, RuleSet, ScanOptions};
 use crate::token::TokenPrefix;
 use crate::vault::{DEFAULT_TTL_DAYS, SessionId, Vault};
+use std::collections::BTreeMap;
 
 /// The session label for Text Mode (D53).
 const TEXT_LABEL: &str = "text";
@@ -30,7 +31,8 @@ pub fn mask_text(text: &str, vault: &mut Vault) -> Result<(String, SessionId)> {
     let plan = plan_spans(vault, &hay, &selected, &prefix, &mut tokens)?;
     let masked = apply(content, &plan);
     let masked = String::from_utf8(masked.to_vec()).map_err(|_| CoreError::TextNotUtf8)?;
-    let id = vault.add_session(TEXT_LABEL, tokens, DEFAULT_TTL_DAYS, ScanOptions::default())?;
+    let opts = ScanOptions::default();
+    let id = vault.add_session(TEXT_LABEL, tokens, DEFAULT_TTL_DAYS, opts, BTreeMap::new())?;
     vault.save()?;
     Ok((masked, id))
 }
@@ -65,7 +67,7 @@ pub fn restore_text(
         unknown,
         ..RestoreReport::default()
     };
-    let report = finish(vault, session, keep, report, &restored.seen)?;
+    let report = finish(vault, session, keep, report, &restored.seen, Vec::new())?;
     Ok((out, report))
 }
 
