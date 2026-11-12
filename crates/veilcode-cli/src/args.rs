@@ -60,6 +60,10 @@ pub enum Cmd {
         /// Keep the session even after a clean restore.
         #[arg(long)]
         keep: bool,
+        /// Where the developer replaced a placeholder with their own value,
+        /// write the original back instead of keeping their value (D146).
+        #[arg(long)]
+        use_original: bool,
     },
     /// List or delete vault sessions.
     #[command(subcommand)]

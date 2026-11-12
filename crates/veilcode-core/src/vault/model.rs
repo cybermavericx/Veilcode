@@ -3,6 +3,7 @@
 use super::project::ProjectKey;
 use crate::error::{CoreError, Result};
 use crate::hex;
+use crate::paths::RelPath;
 use crate::scan::ScanOptions;
 use crate::secret::SecretBytes;
 use crate::token::{Token, TokenPrefix};
@@ -55,6 +56,10 @@ pub struct Session {
     /// The walk options of the mask, reused by restore (D57r).
     pub scan_options: ScanOptions,
     pub tokens: Vec<Token>,
+    /// D146: the files mask wrote each token to. Written only when not
+    /// empty, so sessions from before D146 and Text Mode keep their shape.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<Token, Vec<String>>,
 }
 
 /// A session as read from JSON, before the D61 `expires_at` check.
@@ -66,16 +71,23 @@ struct SessionRecord {
     source_label: String,
     scan_options: ScanOptions,
     tokens: Vec<Token>,
+    #[serde(default)]
+    files: BTreeMap<Token, Vec<String>>,
 }
 
 impl TryFrom<SessionRecord> for Session {
     type Error = &'static str;
 
-    /// D61: `created < expires_at <= created + 365 days`.
+    /// D61: `created < expires_at <= created + 365 days`; D146: every
+    /// recorded file is a valid relative path.
     fn try_from(r: SessionRecord) -> std::result::Result<Self, Self::Error> {
         let max = r.created.saturating_add(MAX_TTL_SECS);
         if r.created >= r.expires_at || r.expires_at > max {
             return Err("invalid expires_at");
+        }
+        let paths = r.files.values().flatten();
+        if paths.into_iter().any(|p| RelPath::parse(p).is_err()) {
+            return Err("invalid file path");
         }
         Ok(Session {
             id: r.id,
@@ -84,6 +96,7 @@ impl TryFrom<SessionRecord> for Session {
             source_label: r.source_label,
             scan_options: r.scan_options,
             tokens: r.tokens,
+            files: r.files,
         })
     }
 }
@@ -260,6 +273,24 @@ mod tests {
         ] {
             let err = VaultData::from_json(&json(tok, id)).err();
             assert!(matches!(err, Some(CoreError::VaultOpen)), "{tok} {id}");
+        }
+    }
+
+    #[test]
+    fn r14_files_record_paths_are_validated() {
+        let tok = "VEILCODE_K_ab000000";
+        let with_files = |path: &str| {
+            let raw = String::from_utf8(json(tok, "0123456789abcdef")).expect("utf8");
+            let files = format!(r#","tokens":["{tok}"],"files":{{"{tok}":["{path}"]}}"#);
+            raw.replace(&format!(r#","tokens":["{tok}"]"#), &files)
+                .into_bytes()
+        };
+        let data = VaultData::from_json(&with_files("a/.env")).expect("valid");
+        let files = &data.sessions[0].files;
+        assert_eq!(files.values().next(), Some(&vec!["a/.env".to_string()]));
+        for bad in ["../x", "/etc/x", "a//b", ""] {
+            let err = VaultData::from_json(&with_files(bad)).err();
+            assert!(matches!(err, Some(CoreError::VaultOpen)), "{bad}");
         }
     }
 

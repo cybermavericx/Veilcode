@@ -221,6 +221,7 @@ fn lf2_non_clean_restore_keeps_session() {
             new_secrets,
             not_copied: 0,
             tokens_in_unscanned: 0,
+            changed_by_developer: 0,
         };
         assert_eq!(rep.kept_reason, Some(reason), "case {case}");
         assert_session_intact(&vault, &m.session_id, &tokens);
@@ -491,6 +492,7 @@ fn not_clean(not_copied: usize, tokens_in_unscanned: usize) -> Option<KeptReason
         new_secrets: 0,
         not_copied,
         tokens_in_unscanned,
+        changed_by_developer: 0,
     })
 }
 

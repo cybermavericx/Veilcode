@@ -26,8 +26,8 @@ pub use clock::{Clock, SystemClock};
 pub use error::{CoreError, Result};
 pub use mask::{MaskOptions, Selection, mask};
 pub use profile::{IgnoreEntry, Profile, Scope, default_profile_path};
-pub use report::{KeptReason, MaskReport, RestoreReport};
-pub use restore::restore;
+pub use report::{Changed, KeptReason, MaskReport, RestoreReport};
+pub use restore::{Originals, restore, restore_check, restore_with};
 pub use scan::{
     Detector, Finding, IgnoreReason, ScanOptions, ScanReport, ScannedFile, Skipped, scan, to_json,
 };

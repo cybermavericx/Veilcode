@@ -1415,3 +1415,96 @@ fn g24_profile_hint_explains_what_the_file_holds() {
     }
     assert!(!hint.contains("http"), "{hint}");
 }
+
+/// A masked fixture whose `DB_PASSWORD` placeholder the developer replaced
+/// with `dev`; returns the state and the placeholder.
+fn changed_by_developer(fx: &Fixture, dev: &str) -> (AppState, String) {
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    done(&mut s, |s| s.mask(fx.path("masked"), MaskForm::default()));
+    let env = read(&fx.path("masked/.env"));
+    let at = env.find("VEILCODE_DB_PASSWORD_").expect("token");
+    let token = env[at..at + "VEILCODE_DB_PASSWORD_".len() + 8].to_string();
+    std::fs::write(fx.path("masked/.env"), env.replace(&token, dev)).expect("write");
+    (s, token)
+}
+
+#[test]
+fn g26_restore_without_changes_asks_nothing() {
+    let fx = Fixture::new();
+    let mut s = fx.scanned();
+    s.confirm_review().expect("confirm");
+    done(&mut s, |s| s.mask(fx.path("masked"), MaskForm::default()));
+    let (masked, restored) = (fx.path("masked"), fx.path("restored"));
+    done(&mut s, |s| s.restore(masked, restored, None, false));
+    assert!(s.changed_rows().is_none());
+    assert!(s.restore_view().expect("restore view").session_forgotten);
+}
+
+#[test]
+fn g26_changed_value_is_asked_about_before_restoring() {
+    let fx = Fixture::new();
+    let dev = fake_password();
+    let (mut s, token) = changed_by_developer(&fx, &dev);
+    let (masked, restored) = (fx.path("masked"), fx.path("restored"));
+    done(&mut s, |s| s.restore(masked, restored, None, false));
+    assert!(s.restore_view().is_none());
+    assert!(!fx.path("restored").exists());
+    let rows = s.changed_rows().expect("changed rows");
+    assert_eq!(rows.len(), 1);
+    let r = &rows[0];
+    assert_eq!(r.place, ".env:1");
+    assert_eq!(r.key, "DB_PASSWORD");
+    assert_eq!(r.placeholder, token);
+    let want_preview = format!("{}…({})", &dev[..4], dev.len());
+    assert_eq!(r.preview, want_preview);
+    assert!(!r.use_original);
+    let mut secrets = fx.secrets();
+    secrets.push(dev.clone());
+    assert_no_secret(format!("{rows:?}").as_bytes(), &secrets);
+    s.set_use_original(&token, true);
+    assert!(s.changed_rows().expect("rows")[0].use_original);
+    done(&mut s, AppState::continue_restore);
+    assert!(s.changed_rows().is_none());
+    assert_eq!(
+        read(&fx.path("restored/.env")),
+        read(&fx.input.join(".env"))
+    );
+    let rv = s.restore_view().expect("restore view");
+    assert!(rv.session_forgotten, "{}", rv.outcome);
+    assert_eq!(rv.changed_by_developer, 1);
+    assert_no_secret(format!("{rv:?}").as_bytes(), &secrets);
+}
+
+#[test]
+fn g26_keep_cancel_and_lock() {
+    let fx = Fixture::new();
+    let dev = fake_password();
+    let (mut s, _) = changed_by_developer(&fx, &dev);
+    let (masked, restored) = (fx.path("masked"), fx.path("restored"));
+    done(&mut s, |s| {
+        s.restore(masked.clone(), restored.clone(), None, false)
+    });
+    s.cancel_restore();
+    assert!(s.changed_rows().is_none());
+    assert!(!fx.path("restored").exists());
+    done(&mut s, |s| {
+        s.restore(masked.clone(), restored.clone(), None, false)
+    });
+    done(&mut s, AppState::continue_restore);
+    let want = read(&fx.input.join(".env")).replace(&fx.password, &dev);
+    assert_eq!(read(&fx.path("restored/.env")), want);
+    let rv = s.restore_view().expect("restore view");
+    assert!(!rv.session_forgotten);
+    assert!(
+        rv.outcome.contains("1 changed by developer"),
+        "{}",
+        rv.outcome
+    );
+    done(&mut s, |s| {
+        s.restore(masked, fx.path("restored2"), None, false)
+    });
+    assert!(s.changed_rows().is_some());
+    s.lock();
+    assert!(s.changed_rows().is_none());
+}

@@ -128,6 +128,11 @@ rc4 feedback (2026-10-21, D144; tests G21–G24 auto, G25 manual):
 - [x] "Vault password" wording in the GUI; a hint explaining the profile file.
 Acceptance: standard checks ✔ · G19 on Windows by the maintainer.
 
+rc5 feedback (2026-11-12, D146; tests R14–R16, C12, G26 auto, G27 manual):
+- [x] Mask records the files each token was written to (encrypted, in the session).
+- [x] Restore pairs a missing placeholder with the developer's new value and reports it as "changed by developer".
+- [x] Per pair: keep the developer's value (default) or use the original; GUI asks before writing, CLI `restore --use-original`.
+
 ## P9 — Windows code signing (not started)
 From D143, after SmartScreen warned on the `v0.2.0-rc4` `.msi`. The maintainer ruled (2026-10-21) that the final Windows release must be code signed; release candidates may stay unsigned. The signing option is still open (D143), and SPEC §13 ("planned v1.x") is updated when it is chosen. Scope, tests and acceptance are written then.
 

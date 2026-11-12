@@ -5,16 +5,17 @@
 
 use crate::idle::{IDLE_LIMIT_SECS, IdleTimer};
 use crate::viewmodel::{
-    self, MaskView, Progress, RestoreView, ResultCard, ReviewView, SessionsView, Step, WorkflowRail,
+    self, ChangedRow, MaskView, Progress, RestoreView, ResultCard, ReviewView, SessionsView, Step,
+    WorkflowRail,
 };
 use crate::worker::{Job, Runner};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use veilcode_core::{
-    Clock, CoreError, DEFAULT_PREFIX, Finding, MaskOptions, MaskReport, Profile, ProjectKey,
-    RestoreReport, ScanOptions, ScanReport, Scope, SecretBytes, SecretString, Selection, SessionId,
-    TokenPrefix, Vault, default_profile_path, default_vault_path,
+    Changed, Clock, CoreError, DEFAULT_PREFIX, Finding, MaskOptions, MaskReport, Originals,
+    Profile, ProjectKey, RestoreReport, ScanOptions, ScanReport, Scope, SecretBytes, SecretString,
+    Selection, SessionId, TokenPrefix, Vault, default_profile_path, default_vault_path,
 };
 
 mod viewer;
@@ -171,11 +172,24 @@ enum Done {
     Rescanned(PathBuf, ScanReport, ProjectKey),
     Masked(MaskReport, PathBuf, Option<PathBuf>),
     Restored(RestoreReport, PathBuf),
+    /// The restore check found placeholders changed by the developer (D146).
+    RestoreChecked(PendingRestore),
     Notice(String),
     TextMasked(String),
     TextRestored(String, RestoreReport),
     /// A finding opened in the viewer (D137).
     Viewed(Viewer),
+}
+
+/// A restore waiting for the user's choice per changed placeholder (D146).
+struct PendingRestore {
+    input: PathBuf,
+    out: PathBuf,
+    session: Option<SessionId>,
+    keep: bool,
+    items: Vec<Changed>,
+    /// Tokens the user chose to restore with their original.
+    originals: BTreeSet<veilcode_core::Token>,
 }
 
 /// A job's result, tagged with the lock epoch it was started in.
@@ -291,6 +305,8 @@ pub struct AppState {
     scan: Option<ScanState>,
     mask_result: Option<MaskView>,
     restore_result: Option<RestoreView>,
+    /// D146: the restore that waits for the "changed by developer" choices.
+    restore_pending: Option<PendingRestore>,
     text_report: Option<RestoreView>,
     /// The open finding viewer (D137).
     viewer: Option<Viewer>,
@@ -322,6 +338,7 @@ impl AppState {
             scan: None,
             mask_result: None,
             restore_result: None,
+            restore_pending: None,
             text_report: None,
             viewer: None,
             prefix_fill: None,
@@ -395,6 +412,7 @@ impl AppState {
         self.scan = None;
         self.mask_result = None;
         self.restore_result = None;
+        self.restore_pending = None;
         self.text_report = None;
         self.viewer = None;
         self.prefix_fill = None;
@@ -481,7 +499,12 @@ impl AppState {
             Done::Masked(r, out, vault) => self.apply_mask(&r, &out, vault.as_deref()),
             Done::Restored(r, out) => {
                 let out = Some(out.display().to_string());
+                self.restore_pending = None;
                 self.restore_result = Some(viewmodel::restore_view(&r, out));
+            }
+            Done::RestoreChecked(p) => {
+                self.restore_result = None;
+                self.restore_pending = Some(p);
             }
             Done::Notice(msg) => self.notice = Some(msg),
             Done::TextMasked(text) => self.set_text_output(text, None),
@@ -895,7 +918,9 @@ impl AppState {
     }
 
     /// Restores `input` into the new folder `out` (SPEC §6.2); `session`
-    /// is a session id (default: the newest).
+    /// is a session id (default: the newest). D146: the job first checks
+    /// for placeholders changed by the developer; if it finds any, nothing
+    /// is written and `changed_rows` asks about them.
     pub fn restore(
         &mut self,
         input: PathBuf,
@@ -911,10 +936,67 @@ impl AppState {
         let (profile, vault) = (self.profile_file()?, self.vault_file()?);
         self.run_vault(move |v| {
             let p = Profile::load(&profile)?;
+            let items = veilcode_core::restore_check(&input, v, session.as_ref(), &p)?;
+            if !items.is_empty() {
+                return Ok(Done::RestoreChecked(PendingRestore {
+                    input,
+                    out,
+                    session,
+                    keep,
+                    items,
+                    originals: BTreeSet::new(),
+                }));
+            }
             let r = veilcode_core::restore(&input, &out, v, session.as_ref(), keep, &p);
             r.map(|r| Done::Restored(r, out))
                 .map_err(|e| forget_error(e, &vault))
         })
+    }
+
+    /// D146: the placeholders changed by the developer, while a restore
+    /// waits for the user's choice.
+    pub fn changed_rows(&self) -> Option<Vec<ChangedRow>> {
+        let p = self.restore_pending.as_ref()?;
+        Some(viewmodel::changed_rows(&p.items, &p.originals))
+    }
+
+    /// D146: use the original (`on`) or keep the developer's value for the
+    /// placeholder `token`.
+    pub fn set_use_original(&mut self, token: &str, on: bool) {
+        let Some(p) = self.restore_pending.as_mut() else {
+            return;
+        };
+        let Some(item) = p.items.iter().find(|c| c.token.as_str() == token) else {
+            return;
+        };
+        if on {
+            p.originals.insert(item.token.clone());
+        } else {
+            p.originals.remove(&item.token);
+        }
+    }
+
+    /// D146: runs the waiting restore with the user's choices.
+    pub fn continue_restore(&mut self) -> Result<(), GuiError> {
+        self.ready()?;
+        let Some(p) = self.restore_pending.take() else {
+            return Ok(());
+        };
+        let (profile, vault) = (self.profile_file()?, self.vault_file()?);
+        self.run_vault(move |v| {
+            let prof = Profile::load(&profile)?;
+            let originals = Originals::Only(p.originals);
+            let session = p.session.as_ref();
+            let (input, out) = (&p.input, &p.out);
+            let r = veilcode_core::restore_with(input, out, v, session, p.keep, &prof, &originals);
+            r.map(|r| Done::Restored(r, p.out))
+                .map_err(|e| forget_error(e, &vault))
+        })
+    }
+
+    /// D146: drops the waiting restore; nothing was written.
+    pub fn cancel_restore(&mut self) {
+        self.restore_pending = None;
     }
 
     /// Deletes one session (D63).

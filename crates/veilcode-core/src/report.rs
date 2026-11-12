@@ -43,8 +43,12 @@ pub struct RestoreReport {
     pub ignored_new_secrets: usize,
     /// Token-shaped strings that are not in the vault, sorted, deduplicated.
     pub unknown: Vec<String>,
-    /// Tokens of the session that never appear in the input, sorted.
+    /// Tokens of the session that never appear in the input, sorted;
+    /// tokens in `changed_by_developer` are not listed again.
     pub missing: Vec<Token>,
+    /// D146: placeholders the developer replaced with a value of the same
+    /// key name, sorted by token. Their findings are not in `new_secrets`.
+    pub changed_by_developer: Vec<Changed>,
     /// Input entries not copied (symlink, excluded, non-UTF-8 name,
     /// changed during the walk), sorted.
     pub not_copied: Vec<String>,
@@ -70,5 +74,18 @@ pub enum KeptReason {
         new_secrets: usize,
         not_copied: usize,
         tokens_in_unscanned: usize,
+        /// D146: pairs kept with the developer's value.
+        changed_by_developer: usize,
     },
+}
+
+/// D146: a placeholder whose place the developer's value took.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Changed {
+    /// The session token that is missing from the input.
+    pub token: Token,
+    /// The developer's value (D25 preview only).
+    pub finding: Finding,
+    /// The original value was written over the developer's value.
+    pub original_used: bool,
 }

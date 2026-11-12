@@ -334,6 +334,21 @@ On a vault with no sessions, `restore(…, None, …)` and `restore_text(…, No
 ### R13 — failed run removes its partial output (D69)
 Type: auto
 Use the paths.rs write-failure hook to fail after 2 files, once in mask and once in restore. Pass when each returns `PartialOutput { cleaned: true, .. }`, the output dir no longer exists, and the vault is unchanged (file sha256 equal).
+### R14 — a replaced placeholder is reported as changed by the developer (D146, added in P8)
+Type: auto
+Mask a tree with `.env` holding `DB_PASSWORD=` + `fake_password()` and `API_KEY=` + `fake_password()`, plus `other.env` holding `API_KEY=` + another `fake_password()`. In the masked `.env`, replace the `DB_PASSWORD` token with a new `fake_password()`; then restore with the default choice. Pass when:
+- the vault session records `.env` (and only `.env`) for the `DB_PASSWORD` token;
+- `report.changed_by_developer` has exactly that token with the `.env` finding and `original_used == false`; neither the token is in `missing` nor the finding in `new_secrets`;
+- the restored `.env` holds the developer's value, and the session is kept with `NotClean { changed_by_developer: 1, .. }`;
+- a developer value with the same key name in a file the token was not written to (`other.env`) does not pair; two missing tokens with the same key name and one candidate do not pair;
+- a session without a `files` record (written as pre-D146 JSON) pairs by key name only;
+- the report JSON and the vault-free outputs pass `assert_no_secret` for the original and the developer's value.
+### R15 — use the original for a changed placeholder (D146, added in P8)
+Type: auto
+Same tree. `restore_check` returns the one pair and writes nothing (the output dir does not exist). `restore_with` choosing the original for that token writes the original value in place of the developer's value (exact restored bytes equal the input `.env`), sets `original_used == true`, counts the token in `tokens_replaced`, and, with nothing else unclean, forgets the session. A choice for a token that does not pair changes nothing.
+### R16 — the original is not written over a file that changed (D146, added in P8)
+Type: auto
+Through the injected hook between the check and the write pass, change the paired file. The developer's value is kept, `original_used == false`, and the session is kept.
 ### X1 — text mode round trip
 Type: auto
 `restore_text(mask_text(s).0) == s` for a string holding a PAT, a URL password and an env line.
@@ -536,6 +551,9 @@ Type: auto
 Through the binary, with one vault: `mask` with `--token-prefix Infra_Mask_` prints "placeholder prefix: Infra_Mask_ (from --token-prefix)"; a second `mask` of the same folder without the flag prints "placeholder prefix: Infra_Mask_ (remembered for this folder)" and writes `Infra_Mask_` tokens and no `VEILCODE_` token; a `mask` of another folder prints "placeholder prefix: VEILCODE_ (default)"; `--token-prefix VEILCODE_` prints "(from --token-prefix)" and writes `VEILCODE_` tokens; the next `mask` without the flag prints "placeholder prefix: VEILCODE_ (default)". `mask --help` mentions the remembered prefix. Every stdout and stderr passes `assert_no_secret`.
 
 ## P5 — CLI release
+### C12 — `restore --use-original` (D146, added in P8)
+Type: auto
+Through the binary: mask a folder with a `DB_PASSWORD` line, replace its token with a new `fake_password()`, and restore twice into new folders. Without the flag, stderr has "changed by developer: .env:1 DB_PASSWORD (kept the developer's value)" and the output holds the developer's value; with `--use-original`, stderr has "(original restored)" and the output holds the original. `restore --help` mentions `--use-original`. Every stdout and stderr passes `assert_no_secret`.
 ### REL1 — release artifacts
 Type: manual
 A test tag on a fork produces 2 binaries (linux-x86_64, windows-x86_64) plus SHA256SUMS plus an SBOM. `sha256sum -c SHA256SUMS` passes.
@@ -699,6 +717,12 @@ Type: auto
 - The unlock labels are "Vault password:" and "Repeat vault password:", the separate-vault label is "Its vault password:", the create checks read "the vault password must be at least 12 characters" and "the vault passwords do not match"; no GUI label contains "passphrase".
 - The first guide step says "vault password".
 - The profile hint says the profile is plain text, names "key names" and "file paths", and says it never holds secret values.
+### G26 — restore asks about values changed by the developer (D146, rc5 feedback)
+Type: auto
+With a fake runner: Restore first runs the check. With no pairs, the restore job follows without a question. With a pair, no restore job runs; the view model lists the item (file:line, key name, placeholder, preview of the developer's value; no secret value) with "Keep developer's value" selected; choosing "Use original" and "Continue restore" passes that token to the restore; "Cancel" clears the list; Lock clears it.
+### G27 — manual QA of "changed by developer" (D146)
+Type: manual
+On Windows 11 with the release build, light and dark theme: mask a folder, replace one placeholder with other text in the masked copy, then Restore. The "Changed by developer" list shows the item; "Keep developer's value" keeps their text and the session; "Use original" puts the original back. A restore with no replaced placeholder asks nothing.
 ### G25 — manual QA of the rc4 fixes (D144)
 Type: manual
 On Windows 11 with the release build, light and dark theme: Review rows have no empty block above or below them; every folder Browse opens in the user's home folder, not the install folder; with a folder typed, the Scan and Restore input pickers open in its parent folder and the output pickers in the typed folder; the status bar shows version and licence; Help shows About; the header shows "by Cybermavericx"; the unlock screen says "Vault password"; the profile hint is readable.
